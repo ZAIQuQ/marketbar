@@ -1,0 +1,151 @@
+import Foundation
+import TickerCore
+
+/// Exercises real encoding, filesystem writes and corruption boundaries using
+/// a disposable directory. Never touches the user's production cache.
+func runArchiveChecks() async -> Bool {
+    let temporary = FileManager.default.temporaryDirectory
+        .appendingPathComponent("MarketBar.ArchiveChecks.\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: temporary) }
+    let archive = CandleArchive(directory: temporary.appendingPathComponent("primary"))
+    let base = ISO8601DateFormatter().date(from: "2026-11-20T12:30:00Z")!
+    var count = 0
+    var failures: [String] = []
+    func check(_ value: Bool, _ description: String) {
+        count += 1
+        if !value { failures.append(description) }
+    }
+    func fixture(offset: TimeInterval = 0, close: Double = 102,
+                 origin: CandleOrigin = .mixed, observedOffset: TimeInterval = 50) -> MinuteCandle {
+        let minute = base.addingTimeInterval(offset)
+        return MinuteCandle(symbol: "AMD", minute: minute, open: 100, high: 105,
+            low: 99, close: close, volume: origin == .yahoo ? 123 : nil,
+            session: .pre, origin: origin, firstEvent: minute.addingTimeInterval(2),
+            lastEvent: minute.addingTimeInterval(48), observedAt: minute.addingTimeInterval(observedOffset),
+            sampleCount: origin == .yahoo ? 0 : 3)
+    }
+    do {
+        let empty = try await archive.load(symbol: "AMD")
+        check(empty.isEmpty, "missing cache loads as empty without creating a directory")
+        check(!FileManager.default.fileExists(atPath: temporary.path), "read-only empty load does not write")
+        for symbol in ["../AMD", "AMD/NVDA", "amd", "NVIDIA", "AMD,NVDA"] {
+            do {
+                _ = try await archive.load(symbol: symbol)
+                check(false, "unsafe or noncanonical symbol rejected: \(symbol)")
+            } catch CandleArchiveError.invalidSymbol {
+                check(true, "unsafe or noncanonical symbol rejected: \(symbol)")
+            }
+        }
+        let original = fixture()
+        let next = fixture(offset: 60, origin: .localSample)
+        try await archive.save(symbol: "AMD", candles: [original, next])
+        let restored = try await archive.load(symbol: "AMD")
+        check(restored == [original, next], "roundtrip preserves OHLC, volume, provenance and event timestamps exactly")
+        let legacyFile = temporary.appendingPathComponent("primary/AMD/2026-11-20.json")
+        var legacy = try JSONSerialization.jsonObject(with: Data(contentsOf: legacyFile)) as! [String: Any]
+        legacy.removeValue(forKey: "previousClose")
+        try JSONSerialization.data(withJSONObject: legacy).write(to: legacyFile)
+        let legacyBundle = try await archive.loadBundle(symbol: "AMD")
+        check(legacyBundle.candles == restored && legacyBundle.references.isEmpty,
+              "schema 1 legacy file without a baseline loads unchanged")
+        let baseline = ChartReference(day: "2026-11-20", previousClose: 98)
+        try await archive.save(symbol: "AMD", candles: [original], references: [baseline.day: baseline])
+        let withBaseline = try await archive.loadBundle(symbol: "AMD")
+        check(withBaseline.references == [baseline.day: baseline], "day-specific previous close survives disk roundtrip")
+
+        let correction = fixture(close: 104, origin: .yahoo)
+        try await archive.save(symbol: "AMD", candles: [correction])
+        let updated = try await archive.load(symbol: "AMD")
+        check(updated == [correction, next], "same-minute update preserves omitted same-day minutes")
+        let refreshedBundle = try await archive.loadBundle(symbol: "AMD")
+        check(refreshedBundle.references == [baseline.day: baseline], "candle-only refresh retains stored previous close")
+        try await archive.save(symbol: "AMD", candles: [fixture(close: 101, observedOffset: 49)])
+        let afterStaleWrite = try await archive.load(symbol: "AMD")
+        check(afterStaleWrite == updated, "older observation cannot overwrite newer same-minute cache")
+
+        // UTC has changed day, but this remains November 20 in New York.
+        let evening = fixture(offset: 12 * 3600)
+        try await archive.save(symbol: "AMD", candles: [evening])
+        let dayFolder = temporary.appendingPathComponent("primary/AMD", isDirectory: true)
+        let dayFiles = try FileManager.default.contentsOfDirectory(atPath: dayFolder.path)
+        check(dayFiles == ["2026-11-20.json"], "file boundaries use New York date rather than UTC date")
+        try await archive.save(symbol: "AMD", candles: [fixture(offset: 86_400)],
+                               references: [baseline.day: baseline])
+        let twoDays = try await archive.loadBundle(symbol: "AMD")
+        check(twoDays.references["2026-11-21"] == nil && twoDays.references[baseline.day] == baseline,
+              "previous close is never copied into another date")
+        let beforeMismatch = try Data(contentsOf: legacyFile)
+        do {
+            try await archive.save(symbol: "AMD", candles: [original], references: [
+                baseline.day: ChartReference(day: "2026-11-21", previousClose: 99)
+            ])
+            check(false, "reference payload date must match its cache date")
+        } catch CandleArchiveError.invalidCandle {
+            check(true, "reference payload date must match its cache date")
+        }
+        check(try Data(contentsOf: legacyFile) == beforeMismatch, "invalid baseline cannot rewrite existing cache")
+
+        let retention = CandleArchive(directory: temporary.appendingPathComponent("retention"))
+        let elevenDays = (0..<11).map { fixture(offset: TimeInterval($0) * 86_400) }
+        try await retention.save(symbol: "AMD", candles: elevenDays)
+        let recent = try await retention.load(symbol: "AMD")
+        check(recent == Array(elevenDays.dropFirst()), "load returns only the most recent ten stored dates")
+        let retainedFiles = try FileManager.default.contentsOfDirectory(atPath:
+            temporary.appendingPathComponent("retention/AMD").path)
+        check(retainedFiles.count == 11, "loading recent dates never deletes old data")
+
+        let target = dayFolder.appendingPathComponent("2026-11-20.json")
+        let corrupted = Data("{damaged fixture".utf8)
+        try corrupted.write(to: target)
+        do {
+            _ = try await archive.load(symbol: "AMD")
+            check(false, "corrupted cache fails whole load")
+        } catch CandleArchiveError.invalidFile {
+            check(true, "corrupted cache fails whole load")
+        }
+        do {
+            try await archive.save(symbol: "AMD", candles: [original])
+            check(false, "save refuses to overwrite corrupted target file")
+        } catch CandleArchiveError.invalidFile {
+            check(true, "save refuses to overwrite corrupted target file")
+        }
+        check(try Data(contentsOf: target) == corrupted, "corrupted original remains byte-for-byte unchanged")
+
+        do {
+            try await archive.save(symbol: "NVDA", candles: [original])
+            check(false, "wrong-symbol candle rejected before write")
+        } catch CandleArchiveError.invalidCandle {
+            check(true, "wrong-symbol candle rejected before write")
+        }
+        let invalidProvenance = MinuteCandle(symbol: "NVDA", minute: base,
+            open: 100, high: 100, low: 100, close: 100, volume: 500,
+            session: .pre, origin: .localSample, firstEvent: base, lastEvent: base,
+            observedAt: base, sampleCount: 2)
+        do {
+            try await archive.save(symbol: "NVDA", candles: [invalidProvenance])
+            check(false, "local sample with fabricated market volume rejected")
+        } catch CandleArchiveError.invalidCandle {
+            check(true, "local sample with fabricated market volume rejected")
+        }
+        let invalidEvents = MinuteCandle(symbol: "NVDA", minute: base,
+            open: 100, high: 100, low: 100, close: 100, volume: nil,
+            session: .pre, origin: .localSample,
+            firstEvent: base.addingTimeInterval(-1), lastEvent: base,
+            observedAt: base, sampleCount: 2)
+        do {
+            try await archive.save(symbol: "NVDA", candles: [invalidEvents])
+            check(false, "event outside its minute rejected")
+        } catch CandleArchiveError.invalidCandle {
+            check(true, "event outside its minute rejected")
+        }
+    } catch {
+        failures.append("unexpected archive check error: \(error.localizedDescription)")
+    }
+    if failures.isEmpty {
+        print("PASS archive checks: \(count) deterministic checks (temporary files, no network)")
+        return true
+    }
+    print("FAIL archive checks: \(failures.count) failures / \(count) checks")
+    failures.forEach { print("  \($0)") }
+    return false
+}
