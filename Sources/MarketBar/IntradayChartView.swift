@@ -185,7 +185,7 @@ struct IntradayChartView: View {
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("\(symbol)，\(effectiveDay) 美东时间，\(selectedSession.label)，\(visible.count) 个有数据的分钟。缺失分钟留空。")
             }
-            .frame(height: 248)
+            .frame(height: error?.isEmpty == false ? 208 : 248)
 
             HStack(spacing: 12) {
                 Text("Yahoo Finance").font(.system(size: 10)).foregroundStyle(.secondary)

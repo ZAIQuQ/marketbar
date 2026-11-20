@@ -37,7 +37,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         })
         let source = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
         source.setEventHandler {
-            Task { @MainActor in NSApplication.shared.terminate(nil) }
+            // terminateLater runs a nested AppKit loop. Enter it outside a
+            // dispatch/Swift task so pending archive tasks can finish.
+            RunLoop.main.perform(inModes: [.common]) {
+                MainActor.assumeIsolated { NSApplication.shared.terminate(nil) }
+            }
         }
         terminationSignal = source
         signal(SIGTERM, SIG_IGN)
