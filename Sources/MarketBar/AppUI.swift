@@ -115,9 +115,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let pending = store.monitor.pendingAlert != nil
         let title = (pending ? "⚠ " : "") + (parts.isEmpty ? "MarketBar" : parts.joined(separator: "  "))
         if statusItem.button?.title != title { statusItem.button?.title = title }
-        let tooltip = (pending ? "SOXLUSDT 有已确认的异动，点击查看提醒。\n" : "")
+        let tooltip = (pending ? "有已确认的行情异动，点击查看提醒。\n" : "")
             + (hiddenCount > 0 ? "\(hiddenCount) 只休市股票已隐藏，仍可在列表查看。\n" : "")
-            + "MarketBar · \(store.connectionText)\n前 / 中 / 后：报价时段 · 现：OKX 现货 · 永：OKX 永续 · ≈：快照 · 旧：超过 60 秒未更新"
+            + "MarketBar · \(store.connectionText)\n前 / 中 / 后：报价时段 · ≈：快照 · 旧：超过 60 秒未更新"
         if statusItem.button?.toolTip != tooltip { statusItem.button?.toolTip = tooltip }
     }
 }
@@ -127,8 +127,7 @@ private func shortSession(_ session: TradingSession) -> String {
     case .pre: return "前"
     case .regular: return "中"
     case .post: return "后"
-    case .perpetual: return "永"
-    case .spot: return "现"
+    case .spot, .perpetual: return ""
     case .closed: return "闭"
     case .unknown: return "?"
     }

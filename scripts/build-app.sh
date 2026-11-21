@@ -57,8 +57,8 @@ cat > "$marketbar_app/Contents/Info.plist" <<'PLIST'
 <key>CFBundleDisplayName</key><string>MarketBar 行情</string>
 <key>CFBundleExecutable</key><string>MarketBar</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.7.0</string>
-<key>CFBundleVersion</key><string>10</string>
+<key>CFBundleShortVersionString</key><string>0.7.1</string>
+<key>CFBundleVersion</key><string>11</string>
 <key>LSMinimumSystemVersion</key><string>13.0</string>
 <key>LSUIElement</key><true/>
 <key>NSHighResolutionCapable</key><true/>
