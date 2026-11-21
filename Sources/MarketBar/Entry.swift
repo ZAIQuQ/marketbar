@@ -86,25 +86,41 @@ private final class LiveDiagnostic {
     }
 
     private func finish() {
+        let formatter = ISO8601DateFormatter()
+        var latestQuotes: [[String: Any]] = []
+        for quote in store.quotes.values {
+            latestQuotes.append(["symbol": quote.symbol, "price": quote.price,
+                                 "quoteTime": formatter.string(from: quote.timestamp),
+                                 "source": quote.source.rawValue, "session": quote.session.rawValue])
+        }
+        var minuteBars: [String: [String: Int]] = [:]
+        for (symbol, bars) in store.candles {
+            minuteBars[symbol] = ["count": bars.count,
+                                 "premarket": bars.filter { $0.session == .pre }.count,
+                                 "online": bars.filter { $0.origin == .yahoo || $0.origin == .okx }.count,
+                                 "local": bars.filter { $0.origin == .localSample }.count,
+                                 "mixed": bars.filter { $0.origin == .mixed }.count]
+        }
+        var references: [String: [String: [String: Any]]] = [:]
+        for (symbol, days) in store.chartReferences {
+            var values: [String: [String: Any]] = [:]
+            for (day, reference) in days {
+                values[day] = ["price": reference.previousClose, "basis": reference.basis.rawValue]
+            }
+            references[symbol] = values
+        }
+        var connections: [String: String] = [:]
+        for symbol in store.symbols { connections[symbol] = store.connectionLabel(symbol: symbol) }
         let result: [String: Any] = [
-            "observedAt": ISO8601DateFormatter().string(from: Date()),
+            "observedAt": formatter.string(from: Date()),
             "connection": store.connectionText,
             "streamSamples": samples,
-            "latest": store.quotes.values.map { ["symbol": $0.symbol, "price": $0.price,
-                "quoteTime": ISO8601DateFormatter().string(from: $0.timestamp),
-                "source": $0.source.rawValue, "session": $0.session.rawValue] as [String: Any] },
+            "latest": latestQuotes,
             "errors": store.symbolErrors,
-            "minuteBars": store.candles.mapValues { bars in
-                ["count": bars.count,
-                 "premarket": bars.filter { $0.session == .pre }.count,
-                 "online": bars.filter { $0.origin == .yahoo || $0.origin == .okx }.count,
-                 "local": bars.filter { $0.origin == .localSample }.count,
-                 "mixed": bars.filter { $0.origin == .mixed }.count]
-            }, "historyErrors": store.historyErrors,
-            "chartReferences": store.chartReferences.mapValues { refs in refs.mapValues {
-                ["price": $0.previousClose, "basis": $0.basis.rawValue] as [String: Any]
-            } },
-            "connections": Dictionary(uniqueKeysWithValues: store.symbols.map { ($0, store.connectionLabel(symbol: $0)) })
+            "minuteBars": minuteBars,
+            "historyErrors": store.historyErrors,
+            "chartReferences": references,
+            "connections": connections
         ]
         if let data = try? JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys]),
            let text = String(data: data, encoding: .utf8) { print(text) }
