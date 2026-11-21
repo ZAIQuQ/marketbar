@@ -1,27 +1,50 @@
-# MarketBar
+<p align="center"><img src="Resources/AppIcon.svg" width="64" height="64" alt=""></p>
+<h1 align="center">MarketBar</h1>
+<p align="center"><strong>简体中文</strong> · <a href="README.en.md" lang="en">English</a></p>
 
-在 Mac 菜单栏看美股、OKX 现货与永续行情，点开查看分钟走势。
+在 Mac 菜单栏看美股、BTC 现货和 SOXL 永续的价格。点开一个品种，就能回看刚才几分钟的走势。
+
+**[下载 Mac 版 ↗](https://github.com/ZAIQuQ/marketbar/releases/latest)**　Apple Silicon · macOS 13 及以上 · 无需行情账号
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/marketbar-dark.png">
-  <img src="docs/images/marketbar.png" alt="MarketBar 自选列表与盘前图表">
+  <img src="docs/images/marketbar.png" width="760" alt="菜单栏同时显示 BTC 现货和 SOXL 永续，展开的 SOXL 一分钟图显示光标所在分钟的价格和涨跌幅。演示画面。">
 </picture>
 
-界面示例，价格为演示数据。
+## 把第一组行情放进菜单栏
 
-- 支持最多 12 个自选品种；通过面板顶部的状态栏图标，逐个勾选要常驻菜单栏的品种。
-- 分时线与 1 分钟 K 线，按纽约日期和交易时段查看；十字线显示价格及相对昨收的涨跌幅。
-- 自动保存分钟数据和昨收基准，离线可查看缓存；图中保留缺失分钟的空白。
-- 原生 Swift、AppKit、SwiftUI，无第三方运行时或 Swift 包依赖，无需账号。
-- 输入 `BTCUSDT` 可查看 OKX `BTC-USDT` 现货，支持完整的 `*-USDT` 交易对。
-- 输入 `SOXLUSDT` 可监控 OKX 的 `SOXL-USDT-SWAP` 永续合约，支持其他完整的 `*-USDT-SWAP` 代码。
-- SOXLUSDT 支持一分钟及连续两分钟的双向价量提醒：放量上涨、放量下跌、持续确认、静默通知和保持唤醒，阈值可调。
+1. 在下载页选择以 `macos-arm64.zip` 结尾的安装包。解压，把 `MarketBar.app` 拖入「应用程序」后打开。发布版尚未经过 Apple 公证。Intel Mac 可按下方说明从源码安装。
+2. 点击菜单栏价格，默认自选是 AMD 和 NVDA。点面板右上角的滑杆按钮，在自选框里填入 `AMD, NVDA, BTCUSDT, SOXLUSDT`，点「完成」。
+3. 点铃铛右侧的矩形图标，勾选你希望常驻菜单栏的品种。例如只勾 BTC 和 SOXL，其余品种仍可在展开的列表里查看。全部取消勾选后，可从菜单栏的 `MarketBar` 重新打开面板。
 
-## 安装
+| 输入代码 | 看到的行情 |
+| --- | --- |
+| `AMD`、`NVDA` | 美股，覆盖盘前、盘中和盘后 |
+| `BTCUSDT` 或 `BTC-USDT` | OKX 比特币现货，以 USDT 报价 |
+| `SOXLUSDT` 或 `SOXL-USDT-SWAP` | OKX 的 SOXL 永续合约，以 USDT 报价 |
+| `BTC`、`SOXL` | 对应的美国上市 ETF |
 
-从 [Releases](https://github.com/ZAIQuQ/marketbar/releases/latest) 下载 Apple Silicon 版本，解压后将 `MarketBar.app` 放入「应用程序」并打开。需要 macOS 13+；应用尚未经过 Apple 公证。
+最多可关注 12 个品种。休市美股会自动从菜单栏隐藏，开市后重新出现。想在休市时查看上一笔价格，点开自选列表即可。
 
-也可以从源码构建，需要 Swift 5.9+ 和 Xcode Command Line Tools。尚未安装命令行工具时，先运行 `xcode-select --install`。CI 同时检查 Apple Silicon 和 Intel 构建。
+## 看一分钟走势
+
+点开自选卡片，在分时线和 1 分钟 K 线之间切换。鼠标移到某一分钟，十字线会显示该分钟的收尾价格和涨跌幅。正在形成的那一分钟会随行情更新。
+
+- **美股**按美东交易日切换盘前、盘中、盘后，图上百分比相对昨收计算。
+- **OKX** 可看近 30 分钟、1／2／3／6／12 小时，或 UTC 全天。滚动窗口用本地时间。图上百分比相对当日 UTC 开盘价，自选卡片显示过去 24 小时涨跌幅。
+
+美股报价来自 Yahoo Finance 的非官方接口，延迟和覆盖随时段变化。OKX 使用官方公开行情。菜单栏的 `≈` 表示快照，`旧` 表示报价已超过 60 秒。分钟数据保存在本机，断网时可以回看已有记录。[行情来源与缓存](docs/DATA_SOURCES.md)
+
+## SOXL 放量时提醒我
+
+打开面板顶部的铃铛，点「启用提醒」。MarketBar 会同时关注 SOXL 永续的放量上涨和下跌。默认的一分钟涨跌门槛是 0.6%，连续两分钟是 1.0%，还需达到基准成交量的 3 倍，并持续确认 5 秒。近期波动较大时，价格门槛会提高。
+
+确认后，菜单栏会留下提醒标记，允许 macOS 通知后也可以收到静音横幅。价格门槛、放量倍数和确认时间都可调整。盯盘在这台 Mac 上运行，合盖、睡眠或断网时会中断。[提醒规则与设置](docs/ALERTS.md)
+
+<details>
+<summary><strong>从源码安装与开发</strong></summary>
+
+需要 macOS 13 或更高版本，以及 Swift 5.9 或更高版本。可通过 `xcode-select --install` 安装 Xcode 命令行工具。
 
 ```sh
 git clone https://github.com/ZAIQuQ/marketbar.git
@@ -29,49 +52,21 @@ cd marketbar
 bash scripts/install.sh
 ```
 
-脚本会构建应用、安装到 `~/Applications/MarketBar.app` 并打开。已有版本会备份；更新前请从应用菜单正常退出。只想构建可运行 `bash scripts/build-app.sh`，产物位于 `dist/MarketBar.app`。
+脚本会备份旧版，将应用安装到 `~/Applications/MarketBar.app` 并打开。仅构建可运行 `bash scripts/build-app.sh`。
 
-## 使用
+- 离线检查：`bash scripts/check.sh`
+- 实流诊断：`swift run MarketBar --diagnose --symbols 'BTCUSDT,SOXLUSDT'`。加 `--monitor --seconds 240` 可观察 SOXL 提醒状态。
+- 界面预览：`swift run MarketBar --preview docs/images`
 
-点击菜单栏价格打开面板，在右上角设置自选。点击顶部「状态栏」图标，勾选要显示的品种，立即生效并保存。取消勾选仍保留报价、图表及原有盯盘；全不选时保留 MarketBar 入口。自选填写顺序决定列表同一交易状态下的顺序，手动勾选顺序决定菜单栏顺序。点击卡片进入图表，鼠标悬停可查看该分钟的价格和涨跌幅。
+</details>
 
-例如 `AMD, NVDA, BTCUSDT, SOXLUSDT`。`BTCUSDT`／`BTC-USDT` 是 OKX BTC 现货；裸 `BTC` 仍是美股 ETF 代码。`SOXL` 是美股 ETF；`SOXLUSDT` 是 OKX USDT 永续，二者分开显示。OKX 列表的涨跌幅为滚动 **24h**。观察区间可选 **30 分钟、1/2/3/6/12 小时、全天**，K 线粒度始终为 1 分钟，选择会保存。滚动区间使用系统本地时间并支持跨日，较长区间按需回填；全天和日期选择按 UTC，十字线基准仍取每根 K 线所属 UTC 日开盘价。
+## Star History
 
-已勾选的休市美股默认从菜单栏隐藏，开市后恢复，现货和永续保持显示；展开列表优先显示交易中的品种，休市股票排在后面，两组内部保留自选顺序。历史图表仍可查看。交易时段优先采用数据源日程，缺失时按纽约工作日的常规延长时段判断。
+<a href="https://www.star-history.com/#ZAIQuQ/marketbar&amp;Date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=ZAIQuQ/marketbar&amp;type=date&amp;legend=top-left&amp;theme=dark">
+    <img src="https://api.star-history.com/chart?repos=ZAIQuQ/marketbar&amp;type=date&amp;legend=top-left" width="680" alt="MarketBar 在 GitHub 上的星标趋势">
+  </picture>
+</a>
 
-点击「盯盘」设置 SOXLUSDT 提醒。提醒默认关闭；启用后经过实时预热才开始判断。规则及误报／漏报限制见[盯盘说明](docs/ALERTS.md)。这不是仓位或强平预警。
-
-| 标记 | 含义 |
-| --- | --- |
-| 前 / 中 / 后 | 这笔报价所属的盘前 / 盘中 / 盘后时段 |
-| ≈ | 分钟快照 |
-| 旧 | 报价时间距当前超过 60 秒 |
-| ◌ | 推送未连接 |
-| 永 | OKX USDT 永续合约 |
-| 现 | OKX USDT 现货（菜单栏显示基础币简称，如 BTC） |
-
-若需登录时启动，将应用添加到 macOS「系统设置 → 通用 → 登录项」。
-
-## 行情与缓存
-
-美股行情通过 Yahoo Finance 非官方接口获取，没有延迟或可用性保证。OKX 现货与合约使用官方公开 WebSocket 和 REST 行情，无需 API Key；应用不连接账户或下单。图表区分线上分钟数据、本机采样和混合数据；本机样本不代表完整分钟成交。详细说明见[数据说明](docs/DATA_SOURCES.md)。
-
-缓存位于 `~/Library/Application Support/MarketBar/Candles/`，按品种和日期保存：美股使用纽约日期，OKX 品种使用 UTC 日期。启动时加载最近 10 个已保存日期，旧文件仍保留。缺少对应日期的涨跌基准时显示「—」。
-
-## 开发
-
-```sh
-bash scripts/check.sh
-```
-
-用 `swift run MarketBar --diagnose` 观察 20 秒网络行情并输出 JSON。该命令不写入行情缓存；没有收到推送时退出码为 2，休市或断网都可能导致这一结果。
-
-指定品种：`swift run MarketBar --diagnose --symbols 'BTCUSDT,SOXLUSDT'`。加 `--monitor --seconds 240` 可观察提醒状态；诊断模式不发送通知、不阻止睡眠、不写入提醒历史。
-
-`Sources/TickerCore` 负责行情解析和分钟数据合并，`Sources/MarketBar` 负责界面、网络连接及本地保存。问题反馈请附 macOS 版本、股票代码和出现问题的时间。
-
-用 `swift run MarketBar --preview docs/images` 生成浅色、深色界面截图，数据固定且不联网。
-
-## 许可
-
-[MIT](LICENSE) · [第三方参考与声明](THIRD_PARTY_NOTICES.md)
+[反馈问题](https://github.com/ZAIQuQ/marketbar/issues) · [MIT 许可](LICENSE) · [第三方声明](THIRD_PARTY_NOTICES.md)
