@@ -4,7 +4,7 @@
 
 在 Mac 菜单栏查看自选行情。点开价格可看分时走势和一分钟 K 线，移到图上任意一分钟即可查看收盘价和涨跌幅。
 
-**[下载 Mac 版](https://github.com/ZAIQuQ/marketbar/releases/latest)**　Apple Silicon · macOS 13 及以上
+**[下载 Mac 版（DMG）](https://github.com/ZAIQuQ/marketbar/releases/latest/download/MarketBar.dmg)**　Apple Silicon 和 Intel · macOS 13 及以上
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/demo-chart-dark.png">
@@ -13,9 +13,11 @@
 
 ## 开始使用
 
-1. 下载以 `macos-arm64.zip` 结尾的安装包，解压后把 `MarketBar.app` 拖入「应用程序」并打开。当前发布版尚未经过 Apple 公证。Intel Mac 可从源码安装。
+1. 双击 `MarketBar.dmg`，把窗口里的 **MarketBar** 拖到 **Applications（应用程序）**。复制完成后推出磁盘映像，从「应用程序」打开 MarketBar。
 2. 点击菜单栏的价格，打开右上角的滑杆按钮，输入想关注的代码，点「完成」。
 3. 点击铃铛右侧的矩形图标，勾选常驻菜单栏的品种。其余品种仍可在自选列表中查看。
+
+当前版本尚未经过 Apple 公证。如果首次打开时系统提示无法验证开发者，可查看 [Apple 的说明](https://support.apple.com/zh-cn/102445)。
 
 支持美股、OKX 现货和 USDT 永续合约，最多可添加 12 个品种。美股使用股票代码，现货使用完整交易对，永续合约使用以 `-SWAP` 结尾的合约代码。
 
@@ -42,6 +44,7 @@ bash scripts/install.sh
 
 脚本会备份旧版，将应用安装到 `~/Applications/MarketBar.app` 并打开。仅构建可运行 `bash scripts/build-app.sh`。
 
+- 生成适用于两种芯片的磁盘映像：`bash scripts/package-release.sh`，产物为 `dist/MarketBar.dmg`。
 - 离线检查：`bash scripts/check.sh`
 - 实流诊断：`swift run MarketBar --diagnose`
 - 界面预览：`swift run MarketBar --preview docs/images`

@@ -33,4 +33,11 @@ jobs:
       - name: Run offline checks
         run: bash scripts/check.sh
       - name: Build app bundle
+        if: matrix.runner == 'macos-15-intel'
         run: bash scripts/build-app.sh
+      - name: Build universal disk image
+        if: matrix.runner == 'macos-15'
+        run: |
+          bash scripts/package-release.sh
+          cd dist
+          shasum -a 256 -c MarketBar.dmg.sha256

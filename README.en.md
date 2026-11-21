@@ -4,7 +4,7 @@
 
 Follow a watchlist in your Mac’s menu bar. Click a price to open a line or one-minute candlestick chart. Hover over a minute to see its closing price and percentage change.
 
-**[Download for Mac](https://github.com/ZAIQuQ/marketbar/releases/latest)**　Apple Silicon · macOS 13 or later
+**[Download for Mac (.dmg)](https://github.com/ZAIQuQ/marketbar/releases/latest/download/MarketBar.dmg)**　Apple Silicon and Intel · macOS 13 or later
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/demo-chart-dark.png">
@@ -13,9 +13,11 @@ Follow a watchlist in your Mac’s menu bar. Click a price to open a line or one
 
 ## Get started
 
-1. Download the file ending in `macos-arm64.zip`, unzip it, then move `MarketBar.app` into Applications and open it. The release build is not notarized by Apple. Intel Mac users can build from source.
+1. Double-click `MarketBar.dmg` and drag **MarketBar** onto **Applications** in the window. Once the copy finishes, eject the disk image and open MarketBar from Applications.
 2. Click a price in the menu bar. Click the sliders at the top right, enter the symbols you want to follow, then click **完成** (Done). The app’s controls are in Simplified Chinese.
 3. Click the rectangle beside the bell to choose which instruments appear in the menu bar. The full watchlist is still available in the panel.
+
+The app has not been notarized by Apple. If macOS asks about the developer on first launch, see [Apple’s guide to opening downloaded apps](https://support.apple.com/en-us/102445).
 
 Add up to 12 US stocks, OKX spot pairs or USDT perpetual swaps. Enter a ticker for a stock, the full trading pair for spot, or the contract code ending in `-SWAP` for a perpetual.
 
@@ -42,6 +44,7 @@ bash scripts/install.sh
 
 The script backs up the previous app, installs to `~/Applications/MarketBar.app` and opens it. To build without installing, run `bash scripts/build-app.sh`.
 
+- Build the universal disk image with `bash scripts/package-release.sh`. The output is `dist/MarketBar.dmg`.
 - Offline checks: `bash scripts/check.sh`
 - Live feed diagnostics: `swift run MarketBar --diagnose`
 - Render the app preview: `swift run MarketBar --preview docs/images`

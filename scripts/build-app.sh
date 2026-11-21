@@ -7,8 +7,10 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
     exit 1
 fi
 
-swift build -c release --product MarketBar
-marketbar_bin_dir="$(swift build -c release --show-bin-path)"
+if [[ $# -gt 1 || ( $# -eq 1 && "$1" != "--universal" ) ]]; then
+    printf 'Usage: %s [--universal]\n' "$0" >&2
+    exit 2
+fi
 mkdir -p "$PWD/dist"
 marketbar_stage="$(mktemp -d "$PWD/dist/.MarketBar-build.XXXXXX")"
 marketbar_app="$marketbar_stage/MarketBar.app"
@@ -30,7 +32,22 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 mkdir -p "$marketbar_app/Contents/MacOS" "$marketbar_app/Contents/Resources"
-cp "$marketbar_bin_dir/MarketBar" "$marketbar_app/Contents/MacOS/MarketBar"
+marketbar_executable="$marketbar_app/Contents/MacOS/MarketBar"
+if [[ "${1:-}" == "--universal" ]]; then
+    marketbar_slices=()
+    for marketbar_arch in arm64 x86_64; do
+        marketbar_triple="$marketbar_arch-apple-macosx13.0"
+        swift build -c release --triple "$marketbar_triple" --product MarketBar
+        marketbar_bin_dir="$(swift build -c release --triple "$marketbar_triple" --show-bin-path)"
+        marketbar_slices+=("$marketbar_bin_dir/MarketBar")
+    done
+    /usr/bin/lipo -create "${marketbar_slices[@]}" -output "$marketbar_executable"
+    /usr/bin/lipo "$marketbar_executable" -verify_arch arm64 x86_64
+else
+    swift build -c release --product MarketBar
+    marketbar_bin_dir="$(swift build -c release --show-bin-path)"
+    cp "$marketbar_bin_dir/MarketBar" "$marketbar_executable"
+fi
 cat > "$marketbar_app/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
