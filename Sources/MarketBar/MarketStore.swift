@@ -21,6 +21,9 @@ final class MarketStore: ObservableObject {
     @Published private(set) var candleConnected = false
     @Published private(set) var candleConnectionText = "分钟推送未连接"
     @Published private(set) var candleReceivedAt: [String: Date] = [:]
+    @Published private(set) var chartHistoryLoading: Set<String> = []
+    @Published private(set) var chartHistoryErrors: [String: String] = [:]
+    @Published private(set) var chartHistoryRevision: UInt64 = 0
 
     private let defaults: UserDefaults
     private let session: URLSession
@@ -51,6 +54,21 @@ final class MarketStore: ObservableObject {
     private var okxConnected = false
     private var okxStatus = "尚未连接"
     private var okxStreamErrors: [String: String] = [:]
+    private struct ChartHistoryKey: Hashable {
+        let symbol: String
+        let range: ChartTimeRange
+    }
+    private struct ChartHistoryLoad {
+        let key: ChartHistoryKey
+        let identifier: UUID
+        let task: Task<Void, Never>
+    }
+    private struct ChartHistoryFailure: Error {
+        let message: String
+    }
+    private var chartHistoryLoads: [String: ChartHistoryLoad] = [:]
+    private var chartHistoryRequests: Set<ChartHistoryKey> = []
+    private var nextChartRequestAt: TimeInterval = 0
 
     func isConnected(symbol: String) -> Bool {
         Instrument.isOKX(symbol) ? okxConnected : yahooConnected
@@ -124,6 +142,7 @@ final class MarketStore: ObservableObject {
         guard !running else { return }
         running = true
         generation &+= 1
+        chartHistoryRevision = generation
         let token = generation
         prepareHistory()
         if symbols.contains(where: { !Instrument.isOKX($0) }) {
@@ -206,6 +225,11 @@ final class MarketStore: ObservableObject {
     func stop() {
         running = false
         generation &+= 1
+        chartHistoryRevision = generation
+        for load in chartHistoryLoads.values { load.task.cancel() }
+        chartHistoryLoads.removeAll()
+        chartHistoryRequests.removeAll()
+        chartHistoryLoading.removeAll()
         streamTask?.cancel()
         keepaliveTask?.cancel()
         pollingTask?.cancel()
@@ -357,6 +381,123 @@ final class MarketStore: ObservableObject {
             markDirty(symbol, minutes: rows.map(\.minute))
             monitor.ingestCandles(rows)
         }
+    }
+
+    /// One bounded backfill for the selected absolute chart window. It never
+    /// changes the latest ticker, 24h change or the per-day reference prices.
+    func loadChartHistory(symbol: String, minutes: Int, anchor: Date) async {
+        guard running, symbols.contains(symbol), Instrument.isOKX(symbol),
+              ChartWindow.range(minutes: minutes, anchor: anchor) != nil else { return }
+        let token = generation
+        let day = Instrument.day(symbol, at: anchor)
+        // Let startup cache/snapshot loading establish the newest known minute
+        // on this date before freezing a request. Later ticks do not relaunch it.
+        if let task = historyTasks[symbol] { await task.value }
+        if let task = snapshotTask { await task.value }
+        guard isCurrent(token), !Task.isCancelled, symbols.contains(symbol) else { return }
+        let latest = candles[symbol]?.last(where: { Instrument.day(symbol, at: $0.minute) == day })?.minute ?? anchor
+        guard let range = ChartWindow.historyRange(minutes: minutes, anchor: latest) else { return }
+        let key = ChartHistoryKey(symbol: symbol, range: range)
+        if ChartWindow.missingMinutes(in: range, symbol: symbol, candles: candles[symbol] ?? []).isEmpty {
+            chartHistoryErrors[symbol] = nil
+            chartHistoryRequests.insert(key)
+            return
+        }
+        if chartHistoryRequests.contains(key) { return }
+        if let active = chartHistoryLoads[symbol], active.key == key {
+            await withTaskCancellationHandler(operation: { await active.task.value },
+                                              onCancel: { active.task.cancel() })
+            return
+        }
+        chartHistoryLoads[symbol]?.task.cancel()
+        let identifier = UUID()
+        chartHistoryErrors[symbol] = nil
+        chartHistoryLoading.insert(symbol)
+        let task = Task<Void, Never> { [weak self] in
+            guard let self else { return }
+            await self.backfillChart(key: key, identifier: identifier, generation: token)
+        }
+        chartHistoryLoads[symbol] = ChartHistoryLoad(key: key, identifier: identifier, task: task)
+        await withTaskCancellationHandler(operation: { await task.value }, onCancel: { task.cancel() })
+    }
+
+    /// A deliberate refresh can retry a previously searched but unavailable gap.
+    func allowChartHistoryRetry(symbol: String) {
+        chartHistoryRequests = chartHistoryRequests.filter { $0.symbol != symbol }
+        chartHistoryErrors[symbol] = nil
+    }
+
+    private func backfillChart(key: ChartHistoryKey, identifier: UUID, generation token: UInt64) async {
+        let symbol = key.symbol
+        func current() -> Bool {
+            isCurrent(token) && symbols.contains(symbol)
+                && chartHistoryLoads[symbol]?.identifier == identifier && !Task.isCancelled
+        }
+        defer {
+            if chartHistoryLoads[symbol]?.identifier == identifier {
+                chartHistoryLoads[symbol] = nil
+                chartHistoryLoading.remove(symbol)
+            }
+        }
+        var searched: [ChartTimeRange] = []
+        let limit = min(16, Int(ceil(key.range.duration / 6_000)) + 1)
+        do {
+            for _ in 0..<limit {
+                guard current() else { return }
+                guard let cursor = ChartWindow.nextHistoryCursor(in: key.range, symbol: symbol,
+                    candles: candles[symbol] ?? [], searched: searched) else { break }
+                // Main-actor reservations also bound requests when the user
+                // switches instruments while an old request is being cancelled.
+                while ProcessInfo.processInfo.systemUptime < nextChartRequestAt {
+                    let delay = max(0, nextChartRequestAt - ProcessInfo.processInfo.systemUptime)
+                    try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                    guard current() else { return }
+                }
+                guard current() else { return }
+                nextChartRequestAt = ProcessInfo.processInfo.systemUptime + 0.55
+                let bars = try await Self.fetchChartHistoryPage(symbol: symbol, before: cursor, session: session)
+                guard current() else { return }
+                guard !bars.contains(where: { $0.minute >= cursor }) else {
+                    throw ChartHistoryFailure(message: "历史数据时间范围异常，已有行情已保留。")
+                }
+                guard let first = bars.first?.minute else { break }
+                searched.append(ChartTimeRange(start: min(first, cursor.addingTimeInterval(-6_000)), end: cursor))
+                let relevant = bars.filter { key.range.contains($0.minute) }
+                if !relevant.isEmpty { ingestRemoteCandles(relevant) }
+            }
+            guard current() else { return }
+            chartHistoryRequests.insert(key)
+            let missing = ChartWindow.missingMinutes(in: key.range, symbol: symbol, candles: candles[symbol] ?? [])
+            if !missing.isEmpty {
+                chartHistoryErrors[symbol] = "部分历史分钟未能回填；已有行情保留，缺口不补造。"
+            } else { chartHistoryErrors[symbol] = nil }
+        } catch {
+            guard current() else { return }
+            chartHistoryErrors[symbol] = (error as? ChartHistoryFailure)?.message
+                ?? "历史分钟回填失败，已有行情已保留。可稍后手动刷新。"
+        }
+    }
+
+    private nonisolated static func fetchChartHistoryPage(symbol: String, before cursor: Date,
+                                                         session: URLSession) async throws -> [MinuteCandle] {
+        var components = URLComponents()
+        components.scheme = "https"
+        components.host = "www.okx.com"
+        components.path = "/api/v5/market/history-candles"
+        components.queryItems = [URLQueryItem(name: "instId", value: symbol),
+            URLQueryItem(name: "bar", value: "1m"), URLQueryItem(name: "limit", value: "100"),
+            URLQueryItem(name: "after", value: String(Int64(cursor.timeIntervalSince1970 * 1_000)))]
+        guard let url = components.url else { throw URLError(.badURL) }
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 12)
+        request.setValue("Mozilla/5.0", forHTTPHeaderField: "User-Agent")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        let (data, response) = try await session.data(for: request)
+        guard let response = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+        if response.statusCode == 429 {
+            throw ChartHistoryFailure(message: "历史分钟请求被限流，请稍后手动刷新。")
+        }
+        guard response.statusCode == 200, data.count <= 4_194_304 else { throw URLError(.badServerResponse) }
+        return try OKXDecoder.candles(data, expectedSymbol: symbol, receivedAt: Date())
     }
 
     private func runStream(generation token: UInt64) async {

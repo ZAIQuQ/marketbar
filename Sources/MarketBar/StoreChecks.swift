@@ -22,6 +22,7 @@ func runStoreChecks() -> Bool {
         count += 1
         if !condition() { failures.append(description) }
     }
+    check(runChartWindowChecks(), "chart time windows and missing-history request boundaries")
     let time = Date(timeIntervalSince1970: 1_700_000_000)
     let received = time.addingTimeInterval(2)
     func quote(_ symbol: String = "AMD", price: Double = 100,

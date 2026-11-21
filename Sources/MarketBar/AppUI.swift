@@ -161,8 +161,14 @@ struct TickerPanel: View {
                     chartNavigation(symbol)
                     Rectangle().fill(MarketTheme.separator).frame(height: 1)
                     IntradayChartView(symbol: symbol, candles: store.candles[symbol] ?? [],
-                                      loading: store.historyLoading, error: store.historyErrors[symbol],
-                                      references: store.chartReferences[symbol] ?? [:]) {
+                                      loading: store.historyLoading || store.chartHistoryLoading.contains(symbol),
+                                      error: store.historyErrors[symbol] ?? store.chartHistoryErrors[symbol],
+                                      references: store.chartReferences[symbol] ?? [:],
+                                      historyRevision: store.chartHistoryRevision,
+                                      onRangeChange: { minutes, anchor in
+                                          await store.loadChartHistory(symbol: symbol, minutes: minutes, anchor: anchor)
+                                      }) {
+                        store.allowChartHistoryRetry(symbol: symbol)
                         store.refreshSnapshots()
                     }
                 }

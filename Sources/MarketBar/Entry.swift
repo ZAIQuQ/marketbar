@@ -66,6 +66,7 @@ private final class LiveDiagnostic {
     private var duration = 20
     private var monitorSamples: [[String: Any]] = []
     private var monitorSampleSecond: Int64?
+    private var requestedHistory: Int?
 
     init() {
         let defaults = UserDefaults(suiteName: suite)!
@@ -83,11 +84,20 @@ private final class LiveDiagnostic {
             configuration.enabled = true
             _ = store.monitor.updateConfiguration(configuration)
         }
+        if let index = CommandLine.arguments.firstIndex(of: "--history-minutes"),
+           CommandLine.arguments.indices.contains(index + 1),
+           let minutes = Int(CommandLine.arguments[index + 1]), ChartWindow.presets.contains(minutes) {
+            requestedHistory = minutes
+            defaults.set(minutes, forKey: "chartWindowMinutes")
+        }
     }
 
     func start() {
         print("Observing market data for \(duration)s; no credentials or trading actions are involved.")
         store.start()
+        if let minutes = requestedHistory, let symbol = store.symbols.first(where: { Instrument.isOKX($0) }) {
+            Task { @MainActor in await store.loadChartHistory(symbol: symbol, minutes: minutes, anchor: Date()) }
+        }
         timer = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.sample() }
         }
@@ -163,7 +173,8 @@ private final class LiveDiagnostic {
             "candleConnection": store.candleConnectionText,
             "candleLastReceived": candleTimes,
             "monitorSamples": monitorSamples,
-            "monitorAlerts": store.monitor.history.count
+            "monitorAlerts": store.monitor.history.count,
+            "chartHistoryErrors": store.chartHistoryErrors
         ]
         if let data = try? JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys]),
            let text = String(data: data, encoding: .utf8) { print(text) }
@@ -176,6 +187,7 @@ private final class LiveDiagnostic {
                                         references: store.chartReferences[symbol] ?? [:], initialHover: hover, onRefresh: {})
                 .padding(18).frame(width: 680, height: 480)
                 .background(Color(nsColor: .windowBackgroundColor)).environment(\.colorScheme, .light)
+                .defaultAppStorage(UserDefaults(suiteName: suite)!)
             // Render our own view hierarchy, including native segmented controls,
             // without requiring screen recording or controlling another app.
             let hosting = NSHostingView(rootView: view)
