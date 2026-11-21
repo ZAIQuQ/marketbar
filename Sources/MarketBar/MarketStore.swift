@@ -69,6 +69,16 @@ final class MarketStore: ObservableObject {
         return hideClosed ? symbols.filter { !isStockClosed($0, at: now) } : symbols
     }
 
+    func watchlistSymbols(at now: Date) -> [String] {
+        var trading: [String] = []
+        var closed: [String] = []
+        for symbol in symbols {
+            if isStockClosed(symbol, at: now) { closed.append(symbol) }
+            else { trading.append(symbol) }
+        }
+        return trading + closed
+    }
+
     func ensureMonitoringTarget() -> Bool {
         if symbols.contains(monitor.symbol) { return true }
         guard symbols.count < 12 else { return false }

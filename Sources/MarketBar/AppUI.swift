@@ -219,15 +219,16 @@ struct TickerPanel: View {
             .padding(.horizontal, 24).padding(.bottom, 10)
 
             TimelineView(.periodic(from: .now, by: 1)) { context in
+                let now = previewDate ?? context.date
                 ScrollView {
                     VStack(spacing: 3) {
-                        ForEach(store.symbols, id: \.self) { symbol in
+                        ForEach(store.watchlistSymbols(at: now), id: \.self) { symbol in
                             Button {
                                 selectedSymbol = symbol
                                 onChartVisibility(true)
                                 store.refreshSnapshots()
                             } label: {
-                                quoteRow(symbol, now: previewDate ?? context.date)
+                                quoteRow(symbol, now: now)
                             }
                             .buttonStyle(QuoteRowButtonStyle())
                             .accessibilityLabel("\(symbol)，查看走势图")
