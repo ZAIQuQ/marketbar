@@ -2,44 +2,27 @@
 <h1 align="center">MarketBar</h1>
 <p align="center"><a href="README.md" lang="zh-CN">简体中文</a> · <strong>English</strong></p>
 
-Follow US stocks, bitcoin spot and SOXL perpetuals from your Mac’s menu bar. Click a price to see how it moved over the last few minutes.
+Follow a watchlist in your Mac’s menu bar. Click a price to open a line or one-minute candlestick chart. Hover over a minute to see its closing price and percentage change.
 
-**[Download for Mac ↗](https://github.com/ZAIQuQ/marketbar/releases/latest)**　Apple Silicon · macOS 13 or later · No market data account required
+**[Download for Mac](https://github.com/ZAIQuQ/marketbar/releases/latest)**　Apple Silicon · macOS 13 or later
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/marketbar-dark.png">
-  <img src="docs/images/marketbar.png" width="760" alt="Demo showing BTC spot and SOXL perpetual prices in the menu bar. The crosshair on the SOXL one-minute chart shows the selected minute’s price and percentage change.">
-</picture>
+## Get started
 
-## Put your first prices in the menu bar
+1. Download the file ending in `macos-arm64.zip`, unzip it, then move `MarketBar.app` into Applications and open it. The release build is not notarized by Apple. Intel Mac users can build from source.
+2. Click a price in the menu bar. Click the sliders at the top right, enter the symbols you want to follow, then click **完成** (Done). The app’s controls are in Simplified Chinese.
+3. Click the rectangle beside the bell to choose which instruments appear in the menu bar. The full watchlist is still available in the panel.
 
-1. Download the file ending in `macos-arm64.zip` from the release page. Unzip it, drag `MarketBar.app` into Applications and open it. The release build is not notarized by Apple. Intel Mac users can build from source using the instructions below.
-2. Click a price in the menu bar. Your watchlist starts with AMD and NVDA. Click the sliders at the top right, enter `AMD, NVDA, BTCUSDT, SOXLUSDT`, then click **完成** (Done). The app’s controls are in Simplified Chinese.
-3. Click the rectangle beside the bell and check the prices you want in the menu bar. Select just BTC and SOXL, for example, and the other instruments stay in the watchlist. Clear every checkmark and you can still open the panel from `MarketBar` in the menu bar.
+Add up to 12 US stocks, OKX spot pairs or USDT perpetual swaps. Enter a ticker for a stock, the full trading pair for spot, or the contract code ending in `-SWAP` for a perpetual.
 
-| Enter | Market |
-| --- | --- |
-| `AMD`, `NVDA` | US stocks with premarket, regular and after-hours quotes |
-| `BTCUSDT` or `BTC-USDT` | Bitcoin spot on OKX, quoted in USDT |
-| `SOXLUSDT` or `SOXL-USDT-SWAP` | SOXL perpetual swap on OKX, quoted in USDT |
-| `BTC`, `SOXL` | The corresponding US-listed ETFs |
+## Charts and alerts
 
-Follow up to 12 instruments. When US trading closes, those symbols are hidden from the menu bar by default and return when trading resumes. Open the watchlist to see their last quotes.
+**US stocks** have separate premarket, regular and after-hours views. Charts use New York trading dates and show the change from the previous close. By default, a stock leaves the menu bar when trading closes and returns when trading resumes.
 
-## Read a one-minute chart
+**OKX charts** offer several time ranges. Rolling windows use your Mac’s local time and the full-day view uses UTC. The watchlist shows the rolling 24-hour change. The chart measures change from the UTC day’s open.
 
-Click a watchlist entry to switch between a line chart and one-minute candles. Hover to see a minute’s closing price and percentage change. The current minute updates as quotes arrive.
+**Market alerts** are available from the bell. The panel shows the supported instrument and settings. Qualifying price and volume changes appear in the menu bar and can trigger a silent macOS notification. [Alert settings (Chinese)](docs/ALERTS.md)
 
-- **US stocks** use New York trading dates. Pick premarket, regular trading or after-hours. The chart measures change from the previous close.
-- **OKX** charts cover the last 30 minutes, 1, 2, 3, 6 or 12 hours, or a full UTC day. Rolling windows use your Mac’s time zone. The chart shows change from the UTC day’s open. Watchlist entries show the rolling 24-hour change.
-
-US quotes come from an unofficial Yahoo Finance feed. Coverage and latency vary by session. OKX quotes use the exchange’s public market data. In the menu bar, `≈` marks a snapshot and `旧` marks a quote older than 60 seconds. Saved candles are available offline. [Data sources and local storage (Chinese)](docs/DATA_SOURCES.md)
-
-## Get an alert when SOXL moves on volume
-
-Click the bell and choose **启用提醒** (Enable alerts) to watch the SOXL perpetual for sharp moves in either direction. By default, a move must reach 0.6% in the current minute or 1.0% across two minutes, with at least three times the baseline volume and five seconds of confirmation. The price threshold rises when recent volatility is high.
-
-Confirmed moves leave a mark in the menu bar and can trigger a silent macOS notification. You can adjust the price thresholds, volume multiple and confirmation time. Monitoring runs on your Mac and pauses when it sleeps, the lid closes or the connection drops. [Alert rules and settings (Chinese)](docs/ALERTS.md)
+US quotes use an unofficial Yahoo Finance feed. Coverage and latency vary by session. OKX quotes come from the exchange’s public feed. Minute records are stored on your Mac and are available offline. [Data sources and storage (Chinese)](docs/DATA_SOURCES.md)
 
 <details>
 <summary><strong>Build from source and development commands</strong></summary>
@@ -55,7 +38,7 @@ bash scripts/install.sh
 The script backs up the previous app, installs to `~/Applications/MarketBar.app` and opens it. To build without installing, run `bash scripts/build-app.sh`.
 
 - Offline checks: `bash scripts/check.sh`
-- Live feed diagnostics: `swift run MarketBar --diagnose --symbols 'BTCUSDT,SOXLUSDT'`. Add `--monitor --seconds 240` to inspect the SOXL monitor.
+- Live feed diagnostics: `swift run MarketBar --diagnose`
 - Render the app preview: `swift run MarketBar --preview docs/images`
 
 </details>
