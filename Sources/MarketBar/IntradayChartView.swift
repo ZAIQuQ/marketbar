@@ -12,6 +12,10 @@ struct IntradayChartView: View {
     let onRefresh: () -> Void
     let onRangeChange: (Int, Date) async -> Void
     let historyRevision: UInt64
+    private let symbolCandles: [MinuteCandle]
+    private let candlesByDay: [String: [MinuteCandle]]
+    private let dayKeys: [String]
+    private let defaultDay: String
 
     init(symbol: String, candles: [MinuteCandle], loading: Bool, error: String?,
          references: [String: ChartReference] = [:], initialHover: Date? = nil,
@@ -26,6 +30,28 @@ struct IntradayChartView: View {
         self.onRefresh = onRefresh
         self.onRangeChange = onRangeChange
         self.historyRevision = historyRevision
+        // Group once per input, calculating a calendar boundary once per day.
+        // Hovering and layout must not reformat every archived minute's date.
+        let sorted = candles.filter { $0.symbol == symbol }.sorted { $0.minute < $1.minute }
+        self.symbolCandles = sorted
+        var grouped: [String: [MinuteCandle]] = [:]
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = Instrument.timeZone(symbol)
+        var boundary: DateInterval?
+        var day = ""
+        var preferredDay = ""
+        let preferredSession: TradingSession = Instrument.isOKX(symbol) ? .perpetual : .pre
+        for candle in sorted {
+            if boundary == nil || candle.minute >= boundary!.end || candle.minute < boundary!.start {
+                boundary = calendar.dateInterval(of: .day, for: candle.minute)
+                day = Instrument.day(symbol, at: candle.minute)
+            }
+            grouped[day, default: []].append(candle)
+            if candle.session == preferredSession { preferredDay = day }
+        }
+        self.candlesByDay = grouped
+        self.dayKeys = grouped.keys.sorted(by: >)
+        self.defaultDay = preferredDay.isEmpty ? grouped.keys.max() ?? "" : preferredDay
         self._hoveredMinute = State(initialValue: initialHover)
         self._selectedSession = State(initialValue: Instrument.isOKX(symbol) ? .perpetual : .pre)
     }
@@ -69,25 +95,14 @@ struct IntradayChartView: View {
         return formatter
     }
 
-    private var symbolCandles: [MinuteCandle] {
-        candles.filter { $0.symbol == symbol }.sorted { $0.minute < $1.minute }
-    }
-
-    private var dayKeys: [String] {
-        Array(Set(symbolCandles.map { Instrument.day(symbol, at: $0.minute) })).sorted(by: >)
-    }
-
     private var effectiveDay: String {
         if dayKeys.contains(selectedDay) { return selectedDay }
-        if let latest = symbolCandles.last(where: { $0.session == (perpetual ? .perpetual : .pre) }) {
-            return Instrument.day(symbol, at: latest.minute)
-        }
-        return dayKeys.first ?? ""
+        return defaultDay
     }
 
     private var anchorMinute: Date? {
         let day = effectiveDay
-        if let latest = symbolCandles.last(where: { Instrument.day(symbol, at: $0.minute) == day })?.minute {
+        if let latest = candlesByDay[day]?.last?.minute {
             return latest
         }
         guard perpetual else { return nil }
@@ -104,21 +119,23 @@ struct IntradayChartView: View {
     private var sessionCandles: [MinuteCandle] {
         let day = effectiveDay
         let range = perpetualRange
-        return symbolCandles.filter {
+        let available = perpetual ? symbolCandles : candlesByDay[day] ?? []
+        return available.filter {
             $0.session == selectedSession
-                && (perpetual ? range?.contains($0.minute) == true : Instrument.day(symbol, at: $0.minute) == day)
+                && (!perpetual || range?.contains($0.minute) == true)
                 && $0.open.isFinite && $0.high.isFinite && $0.low.isFinite && $0.close.isFinite
                 && [$0.open, $0.high, $0.low, $0.close].allSatisfy { $0 > 0 }
         }
     }
 
-    private var detailCandle: MinuteCandle? {
+    private func detailCandle(in visible: [MinuteCandle]) -> MinuteCandle? {
         if let hoveredMinute,
-           let hovered = sessionCandles.first(where: { $0.minute == hoveredMinute }) { return hovered }
-        return sessionCandles.last
+           let hovered = visible.first(where: { $0.minute == hoveredMinute }) { return hovered }
+        return visible.last
     }
 
     var body: some View {
+        let visible = sessionCandles
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 8) {
                 Text(Instrument.displaySymbol(symbol)).font(.system(size: 22, weight: .semibold, design: .rounded))
@@ -139,7 +156,7 @@ struct IntradayChartView: View {
                     .accessibilityLabel("刷新分钟行情")
             }
 
-            details.frame(height: 66, alignment: .topLeading)
+            details(visible: visible).frame(height: 66, alignment: .topLeading)
 
             HStack(spacing: 12) {
                 HStack(spacing: 2) {
@@ -179,7 +196,6 @@ struct IntradayChartView: View {
             }
 
             GeometryReader { geometry in
-                let visible = sessionCandles
                 let layout = PlotLayout(size: geometry.size, day: effectiveDay, session: selectedSession,
                                         symbol: symbol, candles: visible, window: perpetualRange)
                 let plotted = visible.filter { $0.minute >= layout.start && $0.minute < layout.end }
@@ -245,7 +261,7 @@ struct IntradayChartView: View {
 
             HStack(spacing: 12) {
                 Text(sourceLabel).font(.system(size: 10)).foregroundStyle(.secondary)
-                if sessionCandles.contains(where: { $0.origin != .yahoo && $0.origin != .okx }) {
+                if visible.contains(where: { $0.origin != .yahoo && $0.origin != .okx }) {
                     legendItem("含本机采样", color: .orange, outlined: true)
                 }
                 Spacer(minLength: 0)
@@ -296,13 +312,13 @@ struct IntradayChartView: View {
     }
 
     @ViewBuilder
-    private var details: some View {
+    private func details(visible: [MinuteCandle]) -> some View {
         if hoveringGap {
             VStack(alignment: .leading, spacing: 4) {
                 Text("—").font(.system(size: 32, weight: .semibold))
                 Text("此分钟无数据").font(.system(size: 11)).foregroundStyle(.secondary)
             }
-        } else if let candle = detailCandle {
+        } else if let candle = detailCandle(in: visible) {
             VStack(alignment: .leading, spacing: 7) {
                 HStack(alignment: .firstTextBaseline, spacing: 12) {
                     Text(priceLabel(candle.close))

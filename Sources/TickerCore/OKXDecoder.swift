@@ -61,7 +61,9 @@ public enum OKXDecoder {
                 throw QuoteError.malformedData
             }
             return PriceQuote(symbol: expectedSymbol, price: price, timestamp: timestamp,
-                              session: .perpetual, source: .stream, recordsPriceSample: true)
+                              session: .perpetual, source: .stream, recordsPriceSample: true,
+                              tradeID: (row["tradeId"] as? String).flatMap { $0.isEmpty || $0.utf8.count > 128 ? nil : $0 },
+                              sizeContracts: positive(row["sz"]))
         }.sorted { $0.timestamp < $1.timestamp }
     }
 
@@ -86,7 +88,8 @@ public enum OKXDecoder {
                 // shares/base tokens or invent missing volume for local trades.
                 volume: nil, session: .perpetual, origin: .okx,
                 firstEvent: minute, lastEvent: minute, observedAt: receivedAt,
-                sampleCount: 0, isFinal: final)
+                sampleCount: 0, isFinal: final,
+                volumeContracts: number(row[5]).flatMap { $0 >= 0 ? $0 : nil })
             if let prior = minutes[minute], prior.isFinal == true, !final { continue }
             minutes[minute] = candle
         }

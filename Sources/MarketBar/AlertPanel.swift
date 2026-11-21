@@ -9,7 +9,8 @@ struct AlertPanel: View {
     var onBack: () -> Void
     @State private var draft: AlertConfiguration
     @State private var oneMinuteText: String
-    @State private var threeMinuteText: String
+    @State private var twoMinuteText: String
+    @State private var volumeText: String
     @State private var confirmationText: String
     @State private var cooldownText: String
     @State private var adaptive: Bool
@@ -24,7 +25,8 @@ struct AlertPanel: View {
         let configuration = monitor.configuration
         _draft = State(initialValue: configuration)
         _oneMinuteText = State(initialValue: Self.number(configuration.oneMinutePercent))
-        _threeMinuteText = State(initialValue: Self.number(configuration.threeMinutePercent))
+        _twoMinuteText = State(initialValue: Self.number(configuration.twoMinutePercent))
+        _volumeText = State(initialValue: Self.number(configuration.volumeMultiplier))
         _confirmationText = State(initialValue: String(configuration.confirmationSeconds))
         _cooldownText = State(initialValue: Self.number(Double(configuration.cooldownSeconds) / 60))
         _adaptive = State(initialValue: configuration.volatilityMultiplier > 0)
@@ -39,7 +41,7 @@ struct AlertPanel: View {
                 }.buttonStyle(MarketIconButtonStyle()).help("返回")
                 VStack(alignment: .leading, spacing: 3) {
                     Text("SOXLUSDT 盯盘").font(.system(size: 19, weight: .semibold))
-                    Text("OKX 永续 · 异动提醒试运行").font(.system(size: 10)).foregroundStyle(.secondary)
+                    Text("OKX 永续 · 放量上涨 / 放量下跌").font(.system(size: 10)).foregroundStyle(.secondary)
                 }
                 Spacer()
                 phaseBadge
@@ -60,7 +62,7 @@ struct AlertPanel: View {
                 }.padding(.bottom, 4)
             }
 
-            Text("基于行情，不是强平预警；减少提醒可能延后或漏报。")
+            Text("每秒检查已收到的价量；条件满足后持续确认，数据中断时暂停判断。")
                 .font(.system(size: 10)).foregroundStyle(.secondary)
         }
         .padding(20)
@@ -72,20 +74,18 @@ struct AlertPanel: View {
     private var settings: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("提醒条件").font(.system(size: 12, weight: .semibold))
-            Picker("监测方向", selection: $draft.direction) {
-                Text("防上涨（空单）").tag(AlertDirection.up)
-                Text("防下跌（多单）").tag(AlertDirection.down)
-                Text("双向").tag(AlertDirection.both)
-            }.font(.system(size: 11))
+            Label("上涨和下跌都提醒", systemImage: "arrow.up.arrow.down")
+                .font(.system(size: 11)).foregroundStyle(.secondary)
 
             HStack(spacing: 12) {
                 numberField("1 分钟下限", text: $oneMinuteText, unit: "%")
-                numberField("3 分钟下限", text: $threeMinuteText, unit: "%")
+                numberField("2 分钟下限", text: $twoMinuteText, unit: "%")
             }
             HStack(spacing: 12) {
                 numberField("持续确认", text: $confirmationText, unit: "秒")
                 numberField("提醒冷却", text: $cooldownText, unit: "分钟")
             }
+            numberField("成交量至少为近期均量", text: $volumeText, unit: "倍")
             Toggle("自适应波动过滤", isOn: $adaptive)
                 .font(.system(size: 11)).toggleStyle(.switch).controlSize(.small)
             Text(adaptive ? "波动较大时提高阈值，最低仍为上述下限。" : "仅使用固定下限，行情活跃时提醒可能增多。")
@@ -123,9 +123,15 @@ struct AlertPanel: View {
             thresholdRow("1 分钟", change: monitor.evaluation.oneMinuteChange,
                          threshold: monitor.evaluation.oneMinuteThreshold,
                          floor: monitor.configuration.oneMinutePercent)
-            thresholdRow("3 分钟", change: monitor.evaluation.threeMinuteChange,
-                         threshold: monitor.evaluation.threeMinuteThreshold,
-                         floor: monitor.configuration.threeMinutePercent)
+            thresholdRow("2 分钟", change: monitor.evaluation.twoMinuteChange,
+                         threshold: monitor.evaluation.twoMinuteThreshold,
+                         floor: monitor.configuration.twoMinutePercent)
+            if let ratio = monitor.evaluation.volumeRatio {
+                Text("当前量比 \(Self.number(ratio))× · 门槛 \(Self.number(monitor.configuration.volumeMultiplier))×")
+                    .font(.system(size: 10)).foregroundStyle(.secondary).monospacedDigit()
+            }
+            Text(monitor.coverageSummary).font(.system(size: 10)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             Divider()
             HStack(alignment: .top, spacing: 6) {
                 Image(systemName: "bell.slash").foregroundStyle(.secondary)
@@ -238,6 +244,10 @@ struct AlertPanel: View {
                         }
                         Text("\(windowLabel(alert.windowSeconds)) \(signedPercent(alert.changePercent)) · 阈值 \(Self.number(alert.thresholdPercent))% · 确认 \(alert.confirmedSeconds) 秒")
                             .font(.system(size: 10)).foregroundStyle(.secondary).monospacedDigit()
+                        if let ratio = alert.volumeRatio {
+                            Text("成交量 \(Self.number(ratio))× 近期均量")
+                                .font(.system(size: 10)).foregroundStyle(.secondary).monospacedDigit()
+                        }
                         Text("\(Self.number(alert.referencePrice)) → \(Self.number(alert.price)) USDT")
                             .font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
                     }
@@ -251,8 +261,9 @@ struct AlertPanel: View {
     private var methodInfo: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("触发规则").font(.headline)
-            Text("比较真实成交样本在 1 分钟和 3 分钟窗口内的变动；超过阈值后持续确认，再发出静音提醒。")
-            Text("自适应过滤以最近已完成分钟的波动为基准，阈值取固定下限与波动阈值中较高的一项。行情过期、价差过大或成交稀疏时暂停触发。")
+            Text("比较本分钟、连续两分钟相对前收的涨跌。使用已经收到的成交与累计量，每秒检查，满足条件就开始确认，不必等 K 线收盘。")
+            Text("实际累计成交量须达到此前 20 个完整分钟均量的设定倍数；两分钟窗口按两倍均量比较，不按已经过去的秒数放大成交量。近期波动较大时，自适应过滤会提高价格门槛。")
+            Text("成交、分钟流或盘口失鲜时暂停判断。提醒描述已经发生的价量变化，不预测后续方向。")
             Text("冷却减少重复提醒，明显扩大的同向波动可能再次提醒。菜单栏警告会保留到手动标为已查看。")
         }.font(.system(size: 12)).padding(18).frame(width: 320)
     }
@@ -270,7 +281,8 @@ struct AlertPanel: View {
 
     private func apply() {
         guard let one = Double(oneMinuteText.trimmingCharacters(in: .whitespaces)),
-              let three = Double(threeMinuteText.trimmingCharacters(in: .whitespaces)),
+              let two = Double(twoMinuteText.trimmingCharacters(in: .whitespaces)),
+              let volume = Double(volumeText.trimmingCharacters(in: .whitespaces)),
               let confirmation = Int(confirmationText.trimmingCharacters(in: .whitespaces)),
               let minutes = Double(cooldownText.trimmingCharacters(in: .whitespaces)),
               minutes.isFinite, (0.5...1440).contains(minutes) else {
@@ -279,8 +291,11 @@ struct AlertPanel: View {
         }
         var value = draft
         value.enabled = true
+        value.strategy = .minutePriceVolume
+        value.direction = .both
+        value.volumeMultiplier = volume
         value.oneMinutePercent = one
-        value.threeMinutePercent = three
+        value.twoMinutePercent = two
         value.confirmationSeconds = confirmation
         value.cooldownSeconds = Int((minutes * 60).rounded())
         value.volatilityMultiplier = adaptive ? 3.5 : 0
@@ -311,8 +326,8 @@ struct AlertPanel: View {
 
     private func alertTitle(_ alert: MarketAlert) -> String {
         switch alert.direction {
-        case .up: return "上涨提醒"
-        case .down: return "下跌提醒"
+        case .up: return alert.volumeRatio == nil ? "上涨提醒" : "放量上涨"
+        case .down: return alert.volumeRatio == nil ? "下跌提醒" : "放量下跌"
         case .both: return "价格异动"
         }
     }

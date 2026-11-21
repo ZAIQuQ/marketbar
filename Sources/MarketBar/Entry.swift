@@ -9,7 +9,24 @@ struct MarketBarEntry {
     @MainActor static func main() {
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
-        if CommandLine.arguments.contains("--notification-status") {
+        if CommandLine.arguments.contains("--recent-notifications") {
+            guard Bundle.main.bundleURL.pathExtension == "app" else {
+                print("Notification history is available from the built app bundle.")
+                return
+            }
+            Task { @MainActor in
+                let notifications = await UNUserNotificationCenter.current().deliveredNotifications()
+                let formatter = ISO8601DateFormatter()
+                let rows = notifications.sorted { $0.date < $1.date }.map { item in
+                    ["date": formatter.string(from: item.date), "title": item.request.content.title,
+                     "body": item.request.content.body]
+                }
+                if let data = try? JSONSerialization.data(withJSONObject: rows, options: [.prettyPrinted, .sortedKeys]),
+                   let value = String(data: data, encoding: .utf8) { print(value) }
+                exit(0)
+            }
+            app.run()
+        } else if CommandLine.arguments.contains("--notification-status") {
             guard Bundle.main.bundleURL.pathExtension == "app" else {
                 print("Notification status is available from the built app bundle.")
                 return
@@ -21,7 +38,12 @@ struct MarketBarEntry {
             }
             app.run()
         } else if CommandLine.arguments.contains("--self-test") {
-            exit(runStoreChecks() && runAlertMonitorChecks() ? 0 : 1)
+            Task { @MainActor in
+                let appChecks = runStoreChecks() && runAlertMonitorChecks() && runMonitorHealthChecks()
+                let transportChecks = await runTransportChecks()
+                exit(appChecks && transportChecks ? 0 : 1)
+            }
+            app.run()
         } else if CommandLine.arguments.contains("--archive-test") {
             Task { @MainActor in
                 let diskPassed = await runArchiveChecks()
@@ -121,6 +143,9 @@ private final class LiveDiagnostic {
                 row["threeMinuteChange"] = evaluation.threeMinuteChange
                 row["oneMinuteThreshold"] = evaluation.oneMinuteThreshold
                 row["threeMinuteThreshold"] = evaluation.threeMinuteThreshold
+                row["twoMinuteChange"] = evaluation.twoMinuteChange
+                row["twoMinuteThreshold"] = evaluation.twoMinuteThreshold
+                row["volumeRatio"] = evaluation.volumeRatio
                 monitorSamples.append(row)
             }
         }

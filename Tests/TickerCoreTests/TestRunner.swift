@@ -46,6 +46,15 @@ func XCTUnwrap<T>(_ value: T?, file: StaticString = #filePath, line: UInt = #lin
 @main
 struct CoreTestRunner {
     static func main() {
+        if let flag = CommandLine.arguments.firstIndex(of: "--replay-price-volume") {
+            guard CommandLine.arguments.indices.contains(flag + 1) else {
+                print("Usage: TickerCoreTests --replay-price-volume PATH_TO_LOCAL_FIXTURE.json"); exit(2)
+            }
+            do { try PriceVolumeTests.replay(path: CommandLine.arguments[flag + 1]) }
+            catch { fail("Replay failed: \(error)", file: #filePath, line: #line) }
+            if failureCount > 0 { exit(1) }
+            return
+        }
         let marketHours = EquityHoursTests()
         let decoder = YahooDecoderTests()
         let watchlist = WatchlistTests()
@@ -53,6 +62,7 @@ struct CoreTestRunner {
         let references = ChartReferenceTests()
         let okx = OKXTests()
         let anomalies = AnomalyTests()
+        let priceVolume = PriceVolumeTests()
         let tests: [(String, () throws -> Void)] = [
             ("equity extended hours and DST", marketHours.testExtendedHoursBoundariesAndDST),
             ("weekend visibility keeps perpetuals", marketHours.testWeekendDoesNotHidePerpetuals),
@@ -107,13 +117,19 @@ struct CoreTestRunner {
             ("monitor duplicate trades and ticker-only updates", anomalies.testTickerUpdatesAndDuplicateExecutionCannotCreateConfirmation),
             ("monitor stale spread sparse and reconnect reset", anomalies.testStaleWideSpreadSparseAndResetFailClosed),
             ("monitor backfill and future executions rejected", anomalies.testCachedOrFutureExecutionsCannotPrefillWarmup),
+            ("monitor tolerates small exchange clock lead", anomalies.testSmallExchangeClockLeadDoesNotCancelConfirmation),
+            ("monitor quiet execution gaps keep valid history", anomalies.testQuietExecutionGapPreservesWindowWithoutTreatingItAsDisconnect),
             ("monitor cooldown and confirmed escalation", anomalies.testCooldownSuppressesRepeatsButAllowsConfirmedEscalation),
             ("monitor configurable direction and rewarm", anomalies.testDirectionChangesRequireFreshWarmup),
             ("monitor independent direction cooldowns", anomalies.testOppositeDirectionsHaveIndependentCooldowns),
             ("monitor adaptive volatility and exclusion window", anomalies.testVolatilityRaisesThresholdAndExcludesCurrentWindow),
             ("monitor incomplete future and gapped baseline", anomalies.testPartialMixedFutureAndGappedBaselineAreNotEvidence),
             ("monitor fixed floor opt-out preserves warmup", anomalies.testFixedThresholdOptOutStillNeedsLiveWarmup),
-            ("monitor configuration and BBO parsing", anomalies.testConfigurationAndBidAskParsing)
+            ("monitor configuration and BBO parsing", anomalies.testConfigurationAndBidAskParsing),
+            ("minute price/volume catches both directions", priceVolume.testMinutePriceVolumeIsBothDirectionsAndDoesNotMedianAwayBurst),
+            ("minute volume is causal and not extrapolated", priceVolume.testPartialVolumeIsNotTimeExtrapolatedAndFinalFutureVolumeCannotLeak),
+            ("two-minute volume uses an outside-window baseline", priceVolume.testTwoMinuteVolumeUsesPreviousPlusCurrentAndOutsideBaseline),
+            ("trade contract volume dedup and legacy configuration", priceVolume.testExecutionContractVolumeDeduplicatesIDsAndLegacyModelsDecode)
         ]
         for (name, test) in tests {
             let before = failureCount

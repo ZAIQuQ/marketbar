@@ -9,6 +9,7 @@ final class OKXClient {
     private let onTrades: ([PriceQuote]) -> Void
     private let onStatus: (Bool, String) -> Void
     private let onError: (String, String) -> Void
+    private let onReadiness: ((String, Bool, String) -> Void)?
     private let session: URLSession
 
     private struct Subscription: Hashable {
@@ -34,18 +35,21 @@ final class OKXClient {
     private var streamTask: Task<Void, Never>?
     private var watchdogTask: Task<Void, Never>?
     private var pingTask: Task<Void, Never>?
-    private var lastMessageAt: TimeInterval = 0
-    private var pingSentAt: TimeInterval?
+    private var heartbeat = TransportHeartbeat(now: 0)
     private var disconnectReason: String?
+    private var lastReadiness: [String: (ready: Bool, reason: String)] = [:]
+    private var connectionAttempt = 0
 
     init(onTicker: @escaping (OKXTicker) -> Void,
          onTrades: @escaping ([PriceQuote]) -> Void,
          onStatus: @escaping (Bool, String) -> Void,
-         onError: @escaping (String, String) -> Void) {
+         onError: @escaping (String, String) -> Void,
+         onReadiness: ((String, Bool, String) -> Void)? = nil) {
         self.onTicker = onTicker
         self.onTrades = onTrades
         self.onStatus = onStatus
         self.onError = onError
+        self.onReadiness = onReadiness
         let configuration = URLSessionConfiguration.ephemeral
         configuration.urlCache = nil
         configuration.httpCookieStorage = nil
@@ -97,8 +101,8 @@ final class OKXClient {
         watchdogTask = nil
         pingTask = nil
         socket = nil
-        pingSentAt = nil
         acknowledged.removeAll()
+        for symbol in symbols { publishReadiness(symbol) }
         publishStatus(false, "OKX 已暂停")
     }
 
@@ -127,6 +131,7 @@ final class OKXClient {
             } else if requested.filter({ $0.symbol == value }).allSatisfy({ acknowledged.contains($0) }) {
                 reportError(value, "")
             }
+            publishReadiness(value)
         }
         let ready = !acknowledged.isEmpty
         if !channelErrors.isEmpty {
@@ -137,9 +142,41 @@ final class OKXClient {
     }
 
     private func markReady(_ subscription: Subscription) {
+        heartbeat.observeValidFrame(at: ProcessInfo.processInfo.systemUptime)
         acknowledged.insert(subscription)
         channelErrors[subscription] = nil
         publishSubscriptionState(for: subscription.symbol)
+    }
+
+    private func isReady(_ symbol: String) -> Bool {
+        TransportReadiness.isReady(required: ["tickers", "trades"],
+            acknowledged: Set(acknowledged.filter { $0.symbol == symbol }.map(\.channel)),
+            failed: Set(channelErrors.keys.filter { $0.symbol == symbol }.map(\.channel)))
+    }
+
+    private func publishReadiness(_ symbol: String) {
+        let ready = running && isReady(symbol)
+        let reason = !running ? "OKX 已暂停" : ready ? "OKX 报价与成交已就绪"
+            : channelErrors.filter { $0.key.symbol == symbol }.map(\.value).sorted().first ?? "OKX 正在确认报价与成交订阅"
+        guard lastReadiness[symbol]?.ready != ready || lastReadiness[symbol]?.reason != reason else { return }
+        lastReadiness[symbol] = (ready, reason)
+        RuntimeDiagnostics.shared.record(category: "okx_public", event: ready ? "subscription_ready" : "subscription_pending",
+            fields: ["symbol": symbol, "ready": ready, "generation": generation, "attempt": connectionAttempt])
+        onReadiness?(symbol, ready, reason)
+    }
+
+    private func notePendingTimeouts(elapsed: TimeInterval) {
+        for symbol in symbols {
+            let missing = TransportReadiness.timedOut(required: ["tickers", "trades"],
+                acknowledged: Set(acknowledged.filter { $0.symbol == symbol }.map(\.channel)),
+                failed: Set(channelErrors.keys.filter { $0.symbol == symbol }.map(\.channel)), elapsed: elapsed)
+            for channel in missing {
+                channelErrors[Subscription(symbol: symbol, channel: channel)] = "OKX \(channel == "trades" ? "成交" : "报价")订阅确认超时"
+                RuntimeDiagnostics.shared.record(category: "okx_public", event: "subscription_timeout",
+                    fields: ["symbol": symbol, "channel": channel, "elapsed": elapsed, "attempt": connectionAttempt])
+            }
+            if !missing.isEmpty { publishSubscriptionState(for: symbol) }
+        }
     }
 
     private func run(generation token: UInt64) async {
@@ -148,13 +185,16 @@ final class OKXClient {
             acknowledged.removeAll()
             channelErrors.removeAll()
             disconnectReason = nil
+            connectionAttempt += 1
+            for symbol in symbols { publishReadiness(symbol) }
+            RuntimeDiagnostics.shared.record(category: "okx_public", event: "connecting",
+                fields: ["generation": token, "attempt": connectionAttempt])
             publishStatus(false, failures == 0 ? "OKX 正在连接…" : "OKX 正在重连…")
             let currentSocket = session.webSocketTask(with: URL(string: "wss://ws.okx.com/ws/v5/public")!)
             currentSocket.maximumMessageSize = 2_097_152
             socket = currentSocket
-            lastMessageAt = ProcessInfo.processInfo.systemUptime
-            pingSentAt = nil
-            let began = lastMessageAt
+            let began = ProcessInfo.processInfo.systemUptime
+            heartbeat = TransportHeartbeat(now: began)
             currentSocket.resume()
             startWatchdog(socket: currentSocket, generation: token, began: began)
             var failure = Reconnect(reason: "OKX 连接断开")
@@ -172,14 +212,13 @@ final class OKXClient {
                 while current(token, socket: currentSocket), !Task.isCancelled {
                     let message = try await currentSocket.receive()
                     guard current(token, socket: currentSocket), !Task.isCancelled else { return }
-                    lastMessageAt = ProcessInfo.processInfo.systemUptime
                     let data: Data
                     switch message {
                     case .string(let text):
-                        if text == "pong" { pingSentAt = nil; continue }
+                        if text == "pong" { heartbeat.observeValidFrame(at: ProcessInfo.processInfo.systemUptime); continue }
                         data = Data(text.utf8)
                     case .data(let value):
-                        if value == Data("pong".utf8) { pingSentAt = nil; continue }
+                        if value == Data("pong".utf8) { heartbeat.observeValidFrame(at: ProcessInfo.processInfo.systemUptime); continue }
                         data = value
                     @unknown default: continue
                     }
@@ -189,6 +228,12 @@ final class OKXClient {
                 failure = reason
             } catch {
                 failure = Reconnect(reason: disconnectReason ?? "OKX 连接断开")
+                if current(token, socket: currentSocket), !Task.isCancelled {
+                    var fields = RuntimeDiagnostics.errorFields(error)
+                    fields["attempt"] = connectionAttempt
+                    fields["closeCode"] = currentSocket.closeCode.rawValue
+                    RuntimeDiagnostics.shared.record(category: "okx_public", event: "disconnected", fields: fields)
+                }
             }
             guard current(token, socket: currentSocket), !Task.isCancelled else { return }
             watchdogTask?.cancel()
@@ -198,8 +243,13 @@ final class OKXClient {
             currentSocket.cancel(with: .goingAway, reason: nil)
             socket = nil
             if ProcessInfo.processInfo.systemUptime - began >= 60, !acknowledged.isEmpty { failures = 0 }
+            acknowledged.removeAll()
+            for symbol in symbols { publishReadiness(symbol) }
             failures = min(failures + 1, 6)
             let delay = max(failure.minimumDelay, min(pow(2, Double(failures)), 60)) + Double.random(in: 0...1)
+            RuntimeDiagnostics.shared.record(category: "okx_public", event: "reconnect",
+                fields: ["attempt": connectionAttempt, "seconds": delay,
+                         "lastValidAge": ProcessInfo.processInfo.systemUptime - heartbeat.lastValidAt])
             publishStatus(false, "\(failure.reason) · \(Int(delay)) 秒后重连")
             do { try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
             catch { return }
@@ -215,24 +265,31 @@ final class OKXClient {
                 catch { return }
                 guard let self, self.current(token, socket: currentSocket) else { return }
                 let now = ProcessInfo.processInfo.systemUptime
-                if let ping = self.pingSentAt, now - ping >= 10 {
+                if self.heartbeat.action(at: now) == .reconnect {
                     self.disconnectReason = "OKX 心跳超时"
+                    RuntimeDiagnostics.shared.record(category: "okx_public", event: "heartbeat_timeout",
+                        fields: ["attempt": self.connectionAttempt, "lastValidAge": now - self.heartbeat.lastValidAt,
+                                 "pingAge": now - (self.heartbeat.pingSentAt ?? now), "reason": "ping_deadline"])
                     currentSocket.cancel(with: .goingAway, reason: nil)
                     return
                 }
-                if self.acknowledged.isEmpty, self.channelErrors.isEmpty, now - began >= 20 {
+                let hadUnconfirmed = self.requested.contains { !self.acknowledged.contains($0) && self.channelErrors[$0] == nil }
+                self.notePendingTimeouts(elapsed: now - began)
+                if hadUnconfirmed, now - began >= 20, !self.symbols.contains(where: { self.isReady($0) }) {
                     self.disconnectReason = "OKX 订阅确认超时"
                     currentSocket.cancel(with: .goingAway, reason: nil)
                     return
                 }
-                if now - self.lastMessageAt >= 15, self.pingSentAt == nil {
-                    self.pingSentAt = now
+                if self.heartbeat.action(at: now) == .sendPing {
+                    self.heartbeat.beginPing(at: now)
                     // The watchdog must keep running even if sending is stalled.
                     self.pingTask = Task { [weak self] in
                         do { try await currentSocket.send(.string("ping")) }
                         catch {
                             guard let self, self.current(token, socket: currentSocket) else { return }
                             self.disconnectReason = "OKX 心跳发送失败"
+                            RuntimeDiagnostics.shared.record(category: "okx_public", event: "heartbeat_send_error",
+                                fields: RuntimeDiagnostics.errorFields(error))
                             currentSocket.cancel(with: .goingAway, reason: nil)
                         }
                     }
@@ -271,6 +328,8 @@ final class OKXClient {
                 for key in related {
                     acknowledged.remove(key)
                     channelErrors[key] = detail
+                    RuntimeDiagnostics.shared.record(category: "okx_public", event: "subscription_error",
+                        fields: ["symbol": key.symbol, "channel": key.channel, "apiCode": code, "attempt": connectionAttempt])
                 }
                 publishSubscriptionState()
                 if code == "60014" { throw Reconnect(reason: "OKX 请求限流", minimumDelay: 30) }
@@ -303,7 +362,12 @@ final class OKXClient {
             default: break
             }
         } catch {
-            channelErrors[subscription] = "OKX \(subscription.channel == "trades" ? "成交" : "报价")格式异常"
+            let message = "OKX \(subscription.channel == "trades" ? "成交" : "报价")格式异常"
+            if channelErrors[subscription] != message {
+                RuntimeDiagnostics.shared.record(category: "okx_public", event: "decode_error",
+                    fields: ["symbol": subscription.symbol, "channel": subscription.channel, "reason": "decoder_rejected"])
+            }
+            channelErrors[subscription] = message
             publishSubscriptionState(for: subscription.symbol)
         }
     }

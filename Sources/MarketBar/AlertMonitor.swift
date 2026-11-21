@@ -13,6 +13,7 @@ final class AlertMonitor: NSObject, ObservableObject {
     @Published private(set) var notificationStatus = "通知未启用"
     @Published private(set) var storageError: String?
     @Published private(set) var keepAwake: Bool
+    @Published private(set) var coverageSummary = "等待监测数据"
     var isEnabled: Bool { configuration.enabled }
 
     private let defaults: UserDefaults
@@ -29,9 +30,12 @@ final class AlertMonitor: NSObject, ObservableObject {
     private var loadTask: Task<Void, Never>?
     private var pendingWrite: Task<Void, Never>?
     private var storageFailures: [String: String] = [:]
-    private var healthFailureBegan: Date?
-    private var healthNoticeIssued = false
+    private var health = MonitorHealth()
     private var healthIncidentID: String?
+    private var emittedAlerts = 0
+    private var phaseCounts: [MonitorPhase: Int] = [:]
+    private var lastDiagnosticPhase: MonitorPhase?
+    private var lastTick: Date?
 
     init(defaults: UserDefaults = .standard, persistenceDirectory: URL? = nil,
          systemEffects: Bool = true) {
@@ -43,6 +47,21 @@ final class AlertMonitor: NSObject, ObservableObject {
             if let decoded = try? JSONDecoder().decode(AlertConfiguration.self, from: stored),
                decoded.validationError == nil {
                 config = decoded
+                if config.strategy == .legacyMomentum {
+                    // Retain the previous payload for rollback; this upgrade
+                    // changes the rule to the requested bidirectional monitor.
+                    if defaults.data(forKey: "MarketBar.alertConfiguration.beforeMinutePriceVolume") == nil {
+                        defaults.set(stored, forKey: "MarketBar.alertConfiguration.beforeMinutePriceVolume")
+                    }
+                    config.strategy = .minutePriceVolume
+                    config.direction = .both
+                    config.oneMinutePercent = AlertConfiguration.defaults.oneMinutePercent
+                    config.twoMinutePercent = AlertConfiguration.defaults.twoMinutePercent
+                    config.volumeMultiplier = AlertConfiguration.defaults.volumeMultiplier
+                    if let data = try? JSONEncoder().encode(config) {
+                        defaults.set(data, forKey: "MarketBar.alertConfiguration")
+                    }
+                }
             } else {
                 configError = "提醒设置无法读取，已暂时关闭提醒；原设置未覆盖。"
             }
@@ -89,8 +108,7 @@ final class AlertMonitor: NSObject, ObservableObject {
         detector.configure(value)
         if !value.enabled {
             pendingAlert = nil
-            healthFailureBegan = nil
-            healthNoticeIssued = false
+            health = MonitorHealth()
             healthIncidentID = nil
         }
         if changed {
@@ -140,6 +158,11 @@ final class AlertMonitor: NSObject, ObservableObject {
 
     func tick(at now: Date = Date()) {
         guard !stopped else { return }
+        if systemEffects, isEnabled, let previous = lastTick, now.timeIntervalSince(previous) > 2.5 {
+            RuntimeDiagnostics.shared.record(category: "monitor", event: "tick_gap",
+                fields: ["symbol": symbol, "tickGap": now.timeIntervalSince(previous)])
+        }
+        lastTick = now
         guard isEnabled else {
             evaluation = MonitorEvaluation(phase: .off, detail: "提醒未启用")
             return
@@ -157,7 +180,11 @@ final class AlertMonitor: NSObject, ObservableObject {
         history.insert(alert, at: 0)
         history = Array(history.prefix(100))
         pendingAlert = alert
+        emittedAlerts += 1
         appendEvent(alert)
+        if systemEffects {
+            RuntimeDiagnostics.shared.record(category: "monitor", event: "alert", fields: ["symbol": symbol])
+        }
         deliverNotification(alert)
     }
 
@@ -167,7 +194,7 @@ final class AlertMonitor: NSObject, ObservableObject {
     func shutdown() {
         stopped = true
         connected = false
-        healthFailureBegan = nil
+        health = MonitorHealth()
         healthIncidentID = nil
         detector.reset()
         evaluation = MonitorEvaluation(phase: .off, detail: "监测已停止")
@@ -182,6 +209,7 @@ final class AlertMonitor: NSObject, ObservableObject {
     func flushEvents() async {
         await loadTask?.value
         await pendingWrite?.value
+        if systemEffects { await RuntimeDiagnostics.shared.flush() }
     }
 
     func refreshNotificationStatus() async {
@@ -223,11 +251,13 @@ final class AlertMonitor: NSObject, ObservableObject {
             let settings = await center.notificationSettings()
             guard let self, !self.stopped, self.isEnabled else { return }
             guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else {
+                RuntimeDiagnostics.shared.record(category: "notification", event: "skipped", fields: ["symbol": self.symbol, "kind": "market"])
                 await self.refreshNotificationStatus()
                 return
             }
             let content = UNMutableNotificationContent()
-            content.title = alert.direction == .up ? "SOXLUSDT 上行异动 · 空单不利方向" : "SOXLUSDT 下行异动"
+            let move = alert.direction == .up ? "上涨" : "下跌"
+            content.title = "SOXLUSDT " + (alert.volumeRatio == nil ? "" : "放量") + move
             let formatter = DateFormatter()
             formatter.locale = Locale(identifier: "zh_CN")
             formatter.timeZone = .current
@@ -238,35 +268,43 @@ final class AlertMonitor: NSObject, ObservableObject {
                 + "，确认价 " + String(format: "%.2f USDT", alert.price)
                 + "，超过当前阈值 " + String(format: "%.2f%%", alert.thresholdPercent)
                 + "，已连续确认 \(alert.confirmedSeconds) 秒。"
+            if let ratio = alert.volumeRatio {
+                content.body += "成交量为近期均量 " + String(format: "%.2f 倍。", ratio)
+            }
             content.sound = nil
             content.threadIdentifier = "MarketBar.SOXLUSDT"
             content.userInfo = ["symbol": self.symbol, "alertID": alert.id]
             do {
                 try await center.add(UNNotificationRequest(identifier: alert.id, content: content, trigger: nil))
+                RuntimeDiagnostics.shared.record(category: "notification", event: "queued", fields: ["symbol": self.symbol, "kind": "market"])
             } catch {
-                self.notificationStatus = "系统通知未送达 · 菜单栏仍会提醒"
+                RuntimeDiagnostics.shared.record(category: "notification", event: "failed", fields: ["symbol": self.symbol, "kind": "market"])
+                self.notificationStatus = "系统通知提交失败 · 菜单栏仍会提醒"
             }
         }
     }
 
     private func checkHealth(at now: Date) {
         guard now.timeIntervalSince1970.isFinite else { return }
-        if evaluation.phase == .watching {
-            // A socket acknowledgment or a fresh warm-up is not yet recovery
-            // of the full detector. Only its checked watching state resets us.
-            healthFailureBegan = nil
-            healthNoticeIssued = false
-            healthIncidentID = nil
-            return
+        phaseCounts[evaluation.phase, default: 0] += 1
+        let total = phaseCounts.values.reduce(0, +)
+        if systemEffects, lastDiagnosticPhase != evaluation.phase {
+            lastDiagnosticPhase = evaluation.phase
+            RuntimeDiagnostics.shared.record(category: "monitor", event: "phase",
+                fields: ["symbol": symbol, "phase": evaluation.phase.rawValue])
         }
-        guard !connected || evaluation.phase == .stale else {
-            healthFailureBegan = nil
-            return
+        if systemEffects, total % 60 == 0 {
+            RuntimeDiagnostics.shared.record(category: "monitor", event: "summary",
+                fields: ["symbol": symbol, "phaseCounts": Dictionary(uniqueKeysWithValues: phaseCounts.map { ($0.key.rawValue, $0.value) })])
+            setStorageError("diagnostics", RuntimeDiagnostics.shared.lastError)
         }
-        healthFailureBegan = healthFailureBegan ?? now
-        guard !healthNoticeIssued, let began = healthFailureBegan,
-              now.timeIntervalSince(began) >= 20 else { return }
-        healthNoticeIssued = true
+        if total == 1 || total % 10 == 0 {
+            let ready = phaseCounts[.watching, default: 0] + phaseCounts[.confirming, default: 0]
+            coverageSummary = String(format: "本次 %d 次检查 · 可评估 %.0f%% · 提醒 %d 次", total,
+                                     Double(ready) / Double(total) * 100, emittedAlerts)
+        }
+        let failed = !connected || evaluation.phase == .stale
+        guard health.observe(failed: failed, at: now) else { return }
         let incidentID = UUID().uuidString
         healthIncidentID = incidentID
         guard systemEffects, let center = notificationCenter else { return }
@@ -275,7 +313,7 @@ final class AlertMonitor: NSObject, ObservableObject {
         formatter.locale = Locale(identifier: "zh_CN")
         formatter.timeZone = .current
         formatter.dateFormat = "MM-dd HH:mm:ss"
-        let body = "\(formatter.string(from: now)) 本地时间，\(reason)。连接恢复后会重新预热。"
+        let body = "\(formatter.string(from: now)) 本地时间，\(reason)。当前暂停异动判断，数据恢复后自动继续。"
         Task { [weak self] in
             let settings = await center.notificationSettings()
             guard let self, !self.stopped, self.isEnabled, self.healthIncidentID == incidentID,
@@ -293,8 +331,12 @@ final class AlertMonitor: NSObject, ObservableObject {
             do {
                 try await center.add(UNNotificationRequest(identifier: "MarketBar.health.\(incidentID)",
                                                            content: content, trigger: nil))
+                RuntimeDiagnostics.shared.record(category: "notification", event: "queued",
+                    fields: ["symbol": self.symbol, "kind": "health"])
             } catch {
-                self.notificationStatus = "中断通知未送达 · 菜单栏仍显示状态"
+                RuntimeDiagnostics.shared.record(category: "notification", event: "failed",
+                    fields: ["symbol": self.symbol, "kind": "health"])
+                self.notificationStatus = "中断通知提交失败 · 菜单栏仍显示状态"
             }
         }
     }

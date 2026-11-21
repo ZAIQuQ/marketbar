@@ -100,6 +100,63 @@ final class AnomalyTests {
         XCTAssertNil(step(&detector, 91, price: 102).alert)
     }
 
+    func testSmallExchangeClockLeadDoesNotCancelConfirmation() {
+        var detector = monitor()
+        var alerts: [MarketAlert] = []
+        for second in 0...75 {
+            let price = second < 60 ? 100.0 : 101.0
+            let eventTime = time(second).addingTimeInterval(0.07)
+            detector.ingestTrade(PriceQuote(symbol: symbol, price: price, timestamp: eventTime,
+                session: .perpetual, source: .stream), receivedAt: time(second))
+            detector.ingestTicker(OKXTicker(quote: PriceQuote(symbol: symbol, price: price, timestamp: eventTime,
+                session: .perpetual, source: .stream, recordsPriceSample: false), reference: nil,
+                bid: price * 0.9999, ask: price * 1.0001), receivedAt: time(second))
+            let result = detector.evaluate(at: time(second))
+            XCTAssertEqual(result.phase == .stale, false)
+            if let alert = result.alert { alerts.append(alert) }
+        }
+        XCTAssertEqual(alerts.count, 1)
+        XCTAssertEqual(alerts.first?.confirmedSeconds, 5)
+
+        var future = monitor()
+        future.ingestTrade(PriceQuote(symbol: symbol, price: 100, timestamp: time(4),
+            session: .perpetual, source: .stream), receivedAt: time(0))
+        future.ingestTicker(ticker(4, midpoint: 100), receivedAt: time(0))
+        XCTAssertNil(future.evaluate(at: time(0)).alert)
+        // If the computer clock moves backwards after accepted input, the
+        // same three-second bound still prevents evaluation from future data.
+        future.ingestTrade(trade(4, price: 100), receivedAt: time(4))
+        future.ingestTicker(ticker(4, midpoint: 100), receivedAt: time(4))
+        XCTAssertEqual(future.evaluate(at: time(1)).phase, .sparse)
+        future.reset()
+        future.ingestTrade(trade(5, price: 100), receivedAt: time(5))
+        future.ingestTicker(ticker(5, midpoint: 100), receivedAt: time(5))
+        XCTAssertEqual(future.evaluate(at: time(1)).phase, .stale)
+    }
+
+    func testQuietExecutionGapPreservesWindowWithoutTreatingItAsDisconnect() {
+        var detector = monitor()
+        for second in 0...65 { _ = step(&detector, second, price: 100) }
+        for second in 66...72 {
+            detector.ingestTicker(ticker(second, midpoint: 100), receivedAt: time(second))
+            let result = detector.evaluate(at: time(second))
+            XCTAssertNil(result.alert)
+            XCTAssertEqual(result.phase == .stale, false)
+            if second >= 71 { XCTAssertEqual(result.phase, .sparse) }
+        }
+        for second in 73...75 { _ = step(&detector, second, price: 100) }
+        XCTAssertEqual(step(&detector, 76, price: 100).phase, .watching)
+        for second in 77...88 {
+            detector.ingestTicker(ticker(second, midpoint: 100), receivedAt: time(second))
+            let result = detector.evaluate(at: time(second))
+            XCTAssertNil(result.alert)
+            XCTAssertEqual(result.phase == .stale, false)
+        }
+        for second in 89...92 { _ = step(&detector, second, price: 100) }
+        XCTAssertEqual(step(&detector, 93, price: 100).phase, .warming)
+        XCTAssertEqual(detector.evaluate(at: time(100)).phase, .stale)
+    }
+
     func testCooldownSuppressesRepeatsButAllowsConfirmedEscalation() {
         var detector = monitor()
         var alerts: [MarketAlert] = []
@@ -239,7 +296,10 @@ final class AnomalyTests {
         XCTAssertEqual(parsed.quote.recordsPriceSample, false)
     }
 
-    private func enabled() -> AlertConfiguration { AlertConfiguration(enabled: true) }
+    private func enabled() -> AlertConfiguration {
+        AlertConfiguration(enabled: true, direction: .up, oneMinutePercent: 0.8,
+                           threeMinutePercent: 1.5, strategy: .legacyMomentum)
+    }
 
     private func monitor(_ configuration: AlertConfiguration? = nil, withBaseline: Bool = true) -> AnomalyDetector {
         var detector = AnomalyDetector(symbol: symbol, configuration: configuration ?? enabled())

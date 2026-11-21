@@ -4,7 +4,10 @@ import Foundation
 /// is the US ETF; only SOXLUSDT or SOXL-USDT-SWAP selects the perpetual.
 public enum Instrument {
     public static func isOKX(_ symbol: String) -> Bool {
-        symbol.uppercased().range(of: "^[A-Z0-9]{1,22}-USDT-SWAP$", options: .regularExpression) != nil
+        let value = symbol.uppercased()
+        guard value.hasSuffix("-USDT-SWAP") else { return false }
+        let base = value.dropLast(10).utf8
+        return (1...22).contains(base.count) && base.allSatisfy { (65...90).contains($0) || (48...57).contains($0) }
     }
 
     public static func displaySymbol(_ symbol: String) -> String {

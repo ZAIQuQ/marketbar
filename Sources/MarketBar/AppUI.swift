@@ -19,6 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.target = self
         statusItem.button?.action = #selector(togglePopover)
+        statusItem.button?.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
         popover.behavior = .transient
         popover.delegate = self
         popover.contentSize = NSSize(width: 410, height: 520)
@@ -111,12 +112,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             let marker = old ? "·旧" : quote.source == .snapshot ? "≈" : shortSession(quote.session)
             return "\(connection)\(name) \(quote.price.formatted(.number.precision(.fractionLength(2))))\(marker)"
         }
-        statusItem.button?.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
         let pending = store.monitor.pendingAlert != nil
-        statusItem.button?.title = (pending ? "⚠ " : "") + (parts.isEmpty ? "MarketBar" : parts.joined(separator: "  "))
-        statusItem.button?.toolTip = (pending ? "SOXLUSDT 有已确认的异动，点击查看提醒。\n" : "")
+        let title = (pending ? "⚠ " : "") + (parts.isEmpty ? "MarketBar" : parts.joined(separator: "  "))
+        if statusItem.button?.title != title { statusItem.button?.title = title }
+        let tooltip = (pending ? "SOXLUSDT 有已确认的异动，点击查看提醒。\n" : "")
             + (hiddenCount > 0 ? "\(hiddenCount) 只休市股票已隐藏，仍可在列表查看。\n" : "")
             + "MarketBar · \(store.connectionText)\n前 / 中 / 后：报价时段 · 永：OKX 永续 · ≈：快照 · 旧：超过 60 秒未更新"
+        if statusItem.button?.toolTip != tooltip { statusItem.button?.toolTip = tooltip }
     }
 }
 

@@ -48,6 +48,7 @@ final class MarketStore: ObservableObject {
     private var candleClient: OKXCandleClient?
     private var monitorTask: Task<Void, Never>?
     private var candleStreamErrors: [String: String] = [:]
+    private var candleFallbackErrors: [String: String] = [:]
     private var tradingSchedules: [String: EquityTradingSchedule] = [:]
     private var yahooConnected = false
     private var yahooStatus = "尚未连接"
@@ -167,14 +168,14 @@ final class MarketStore: ObservableObject {
                 self.okxConnected = connected
                 self.okxStatus = message
                 self.updateConnectionSummary()
-                self.monitor.setConnected(connected && self.okxStreamErrors[self.monitor.symbol] == nil, reason: message)
+                if !connected { self.monitor.setConnected(false, reason: message) }
             }, onError: { [weak self] symbol, message in
                 guard let self, self.isCurrent(token) else { return }
                 self.okxStreamErrors[symbol] = message.isEmpty ? nil : message
                 self.symbolErrors[symbol] = self.okxStreamErrors[symbol]
-                if symbol == self.monitor.symbol {
-                    self.monitor.setConnected(self.okxConnected && message.isEmpty, reason: message.isEmpty ? self.okxStatus : message)
-                }
+            }, onReadiness: { [weak self] symbol, ready, message in
+                guard let self, self.isCurrent(token), symbol == self.monitor.symbol else { return }
+                self.monitor.setConnected(ready, reason: message)
             })
             okxClient = client
             client.start(symbols: okxSymbols)
@@ -182,7 +183,11 @@ final class MarketStore: ObservableObject {
                 guard let self, self.isCurrent(token) else { return }
                 self.ingestRemoteCandles(bars)
                 let now = Date()
-                for symbol in Set(bars.map(\.symbol)) { self.candleReceivedAt[symbol] = now }
+                for symbol in Set(bars.map(\.symbol)) {
+                    self.candleReceivedAt[symbol] = now
+                    self.candleFallbackErrors[symbol] = nil
+                    self.updateHistoryError(symbol)
+                }
             }, onStatus: { [weak self] connected, message in
                 guard let self, self.isCurrent(token) else { return }
                 self.candleConnected = connected
@@ -190,7 +195,7 @@ final class MarketStore: ObservableObject {
             }, onError: { [weak self] symbol, message in
                 guard let self, self.isCurrent(token) else { return }
                 self.candleStreamErrors[symbol] = message.isEmpty ? nil : message
-                self.historyErrors[symbol] = self.storageFailures[symbol] ?? self.candleStreamErrors[symbol]
+                self.updateHistoryError(symbol)
             })
             self.candleClient = candleClient
             candleClient.start(symbols: okxSymbols)
@@ -316,11 +321,13 @@ final class MarketStore: ObservableObject {
                     }
                     if let bars = result.candles, !bars.isEmpty {
                         self.ingestRemoteCandles(bars)
-                        self.historyErrors[result.symbol] = self.storageFailures[result.symbol] ?? self.candleStreamErrors[result.symbol]
+                        self.candleFallbackErrors[result.symbol] = nil
                     } else {
-                        self.historyErrors[result.symbol] = self.storageFailures[result.symbol]
-                            ?? result.error ?? "线上分钟数据暂不可用，保留已有数据和本机采样。"
+                        let freshStream = self.candleReceivedAt[result.symbol].map { Date().timeIntervalSince($0) <= 5 } ?? false
+                        self.candleFallbackErrors[result.symbol] = freshStream ? nil
+                            : result.error ?? "线上分钟数据暂不可用，保留已有数据和本机采样。"
                     }
+                    self.updateHistoryError(result.symbol)
                 }
             }
             guard let self, self.isCurrent(token) else { return }
@@ -355,6 +362,10 @@ final class MarketStore: ObservableObject {
 
     private func isCurrent(_ token: UInt64) -> Bool {
         running && generation == token
+    }
+
+    private func updateHistoryError(_ symbol: String) {
+        historyErrors[symbol] = storageFailures[symbol] ?? candleStreamErrors[symbol] ?? candleFallbackErrors[symbol]
     }
 
     private func recordSample(_ quote: PriceQuote, received: Date) {
@@ -720,7 +731,7 @@ final class MarketStore: ObservableObject {
                     self.chartReferences[symbol, default: [:]].merge(saved.references) { current, _ in current }
                     self.loadedHistory.insert(symbol)
                     self.blockedHistory.remove(symbol)
-                    if self.storageFailures.removeValue(forKey: symbol) != nil { self.historyErrors[symbol] = nil }
+                    if self.storageFailures.removeValue(forKey: symbol) != nil { self.updateHistoryError(symbol) }
                 } catch {
                     guard let self else { return }
                     self.blockedHistory.insert(symbol)
@@ -761,7 +772,7 @@ final class MarketStore: ObservableObject {
             dirtyDays[symbol]?.subtract(days)
             do {
                 try await archive.save(symbol: symbol, candles: bars, references: chartReferences[symbol] ?? [:])
-                if storageFailures.removeValue(forKey: symbol) != nil { historyErrors[symbol] = nil }
+                if storageFailures.removeValue(forKey: symbol) != nil { updateHistoryError(symbol) }
             }
             catch {
                 dirtyDays[symbol, default: []].formUnion(days)

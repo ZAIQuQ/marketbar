@@ -9,6 +9,7 @@ func runAlertMonitorChecks() -> Bool {
     let monitor = AlertMonitor(defaults: defaults, systemEffects: false)
     defer { monitor.shutdown() }
     var configuration = AlertConfiguration.defaults
+    configuration.strategy = .legacyMomentum
     configuration.enabled = true
     guard monitor.updateConfiguration(configuration) else { return false }
     monitor.setConnected(true, reason: "isolated fixture")
@@ -52,6 +53,26 @@ func runAlertMonitorChecks() -> Bool {
         print("FAIL monitor integration: re-enabling replayed a historical event")
         return false
     }
-    print("PASS monitor integration: confirmation, pending badge, acknowledgment and rewarm; no system effects")
+    let oldSettings = Data("""
+    {"enabled":true,"direction":"up","oneMinutePercent":0.8,"threeMinutePercent":1.5,
+     "confirmationSeconds":5,"cooldownSeconds":300,"volatilityMultiplier":3.5,"maximumSpreadPercent":0.3}
+    """.utf8)
+    defaults.set(oldSettings, forKey: "MarketBar.alertConfiguration")
+    let upgraded = AlertMonitor(defaults: defaults, systemEffects: false)
+    defer { upgraded.shutdown() }
+    guard upgraded.isEnabled, upgraded.configuration.strategy == .minutePriceVolume,
+          upgraded.configuration.direction == .both,
+          upgraded.configuration.oneMinutePercent == AlertConfiguration.defaults.oneMinutePercent,
+          defaults.data(forKey: "MarketBar.alertConfiguration.beforeMinutePriceVolume") == oldSettings else {
+        print("FAIL monitor configuration migration")
+        return false
+    }
+    var customized = upgraded.configuration
+    customized.oneMinutePercent = 0.7
+    _ = upgraded.updateConfiguration(customized)
+    let reloaded = AlertMonitor(defaults: defaults, systemEffects: false)
+    defer { reloaded.shutdown() }
+    guard reloaded.configuration.oneMinutePercent == 0.7 else { return false }
+    print("PASS monitor integration: confirmation, pending badge, acknowledgment, rewarm and settings migration; no system effects")
     return true
 }

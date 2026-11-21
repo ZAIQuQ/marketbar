@@ -52,9 +52,12 @@ public struct PriceQuote: Equatable {
     /// False when the timestamp describes ticker-message generation rather
     /// than a trade execution (for example OKX's bid/ask-triggered ticker).
     public let recordsPriceSample: Bool
+    public let tradeID: String?
+    public let sizeContracts: Double?
 
     public init(symbol: String, price: Double, timestamp: Date, session: TradingSession,
-                source: QuoteSource, changePercent: Double? = nil, recordsPriceSample: Bool = true) {
+                source: QuoteSource, changePercent: Double? = nil, recordsPriceSample: Bool = true,
+                tradeID: String? = nil, sizeContracts: Double? = nil) {
         self.symbol = symbol
         self.price = price
         self.timestamp = timestamp
@@ -62,6 +65,8 @@ public struct PriceQuote: Equatable {
         self.source = source
         self.changePercent = changePercent
         self.recordsPriceSample = recordsPriceSample
+        self.tradeID = tradeID
+        self.sizeContracts = sizeContracts
     }
 }
 
