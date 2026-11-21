@@ -6,6 +6,11 @@
 
 **[下载 Mac 版](https://github.com/ZAIQuQ/marketbar/releases/latest)**　Apple Silicon · macOS 13 及以上
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/demo-chart-dark.png">
+  <img src="docs/images/demo-chart.png" width="760" alt="虚构品种 DEMO 的分钟图示例，十字线显示所选分钟的收盘价和涨跌幅">
+</picture>
+
 ## 开始使用
 
 1. 下载以 `macos-arm64.zip` 结尾的安装包，解压后把 `MarketBar.app` 拖入「应用程序」并打开。当前发布版尚未经过 Apple 公证。Intel Mac 可从源码安装。

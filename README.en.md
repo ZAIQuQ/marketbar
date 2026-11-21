@@ -6,6 +6,11 @@ Follow a watchlist in your Mac’s menu bar. Click a price to open a line or one
 
 **[Download for Mac](https://github.com/ZAIQuQ/marketbar/releases/latest)**　Apple Silicon · macOS 13 or later
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/demo-chart-dark.png">
+  <img src="docs/images/demo-chart.png" width="760" alt="A one-minute chart for the fictional DEMO instrument. The crosshair shows a sample closing price and percentage change.">
+</picture>
+
 ## Get started
 
 1. Download the file ending in `macos-arm64.zip`, unzip it, then move `MarketBar.app` into Applications and open it. The release build is not notarized by Apple. Intel Mac users can build from source.
