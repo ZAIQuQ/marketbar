@@ -51,13 +51,13 @@ final class OKXCandleClient {
         var valid: [String] = []
         for symbol in incoming {
             guard symbol == symbol.uppercased(), Instrument.isOKX(symbol) else {
-                reportError(symbol, "OKX 分钟订阅需要完整永续合约代码")
+                reportError(symbol, "OKX 分钟订阅需要完整现货或永续代码")
                 continue
             }
             if !valid.contains(symbol) { valid.append(symbol) }
         }
         guard valid.count <= 12 else {
-            for symbol in valid { reportError(symbol, "最多同时订阅 12 个合约") }
+            for symbol in valid { reportError(symbol, "最多同时订阅 12 个交易对或合约") }
             stop()
             return
         }
@@ -287,7 +287,7 @@ final class OKXCandleClient {
                 let code = message["code"] as? String ?? "未知"
                 let target = symbol ?? (message["id"] as? String).flatMap { requestIDs[$0] }
                 let affected = target.map { [$0] } ?? symbols
-                let text = code == "60018" ? "OKX 未找到该合约的分钟频道（60018）" : "OKX 分钟订阅失败（\(code)）"
+                let text = code == "60018" ? "OKX 未找到该品种的分钟频道（60018）" : "OKX 分钟订阅失败（\(code)）"
                 for value in affected {
                     acknowledged.remove(value)
                     subscriptionErrors[value] = text

@@ -61,6 +61,7 @@ struct CoreTestRunner {
         let candles = CandleTests()
         let references = ChartReferenceTests()
         let okx = OKXTests()
+        let spot = SpotTests()
         let anomalies = AnomalyTests()
         let priceVolume = PriceVolumeTests()
         let tests: [(String, () throws -> Void)] = [
@@ -112,6 +113,11 @@ struct CoreTestRunner {
             ("OKX final candle precedence and restore", okx.testOKXFinalFlagControlsCompletionAndLaterPartialCannotReopen),
             ("OKX current candle upserts", okx.testOKXCurrentMinuteUpsertsAndOlderResponseIsIgnored),
             ("OKX model additions preserve legacy JSON", okx.testLegacyReferenceAndCandleJSONStillDecode),
+            ("spot aliases preserve stocks and perpetuals", spot.testExplicitSpotAliasPreservesBareStockAndPerpetualSymbols),
+            ("spot ticker rejects contract mismatches", spot.testSpotTickerValidatesSpotTypeAndCannotBecomePerpetual),
+            ("spot executions keep base units and dedup", spot.testSpotExecutionsUseDeduplicatedBaseQuantityOnly),
+            ("spot candles and legacy cache compatibility", spot.testSpotCandleVolumeAndLegacyCacheCompatibility),
+            ("spot is excluded from perpetual alert strategy", spot.testSpotCannotEnterPerpetualAnomalyStrategy),
             ("monitor sustained move and confirmation", anomalies.testSustainedMoveNeedsWarmupAndFiveSecondsConfirmation),
             ("monitor isolated outliers and noisy flat", anomalies.testIsolatedOutlierAndNoisyFlatNeverConfirm),
             ("monitor duplicate trades and ticker-only updates", anomalies.testTickerUpdatesAndDuplicateExecutionCannotCreateConfirmation),

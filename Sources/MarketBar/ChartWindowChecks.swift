@@ -37,7 +37,7 @@ func runChartWindowChecks() -> Bool {
 
     func candle(_ minute: Date, symbol value: String = "SOXL-USDT-SWAP") -> MinuteCandle {
         MinuteCandle(symbol: value, minute: minute, open: 33, high: 34, low: 32, close: 33,
-            volume: nil, session: .perpetual, origin: .okx,
+            volume: nil, session: Instrument.marketSession(value), origin: .okx,
             firstEvent: minute, lastEvent: minute, observedAt: end,
             sampleCount: 0, isFinal: true)
     }
@@ -54,6 +54,15 @@ func runChartWindowChecks() -> Bool {
           "unavailable searched minute does not cause an endless identical request")
     check(ChartWindow.missingMinutes(in: short, symbol: symbol, candles: present) == [hole],
           "marking a gap searched never fabricates a candle")
+
+    let spot = "BTC-USDT"
+    let spotRows = [candle(short.start, symbol: spot), candle(date("2026-11-21T00:00:00Z"), symbol: spot),
+                    candle(hole, symbol: "BTC-USDT-SWAP")]
+    check(spotRows[0].session == .spot, "BTC spot retains its spot session")
+    check(ChartWindow.missingMinutes(in: short, symbol: spot, candles: spotRows) == [hole],
+          "spot rolling chart spans UTC midnight and never uses perpetual candles to fill gaps")
+    check(ChartWindow.nextHistoryCursor(in: short, symbol: spot, candles: spotRows, searched: []) == hole.addingTimeInterval(60),
+          "spot history uses the same exclusive missing-minute cursor")
 
     var pages: [ChartTimeRange] = []
     while let cursor = ChartWindow.nextHistoryCursor(in: twelveHours, symbol: symbol, candles: [], searched: pages) {

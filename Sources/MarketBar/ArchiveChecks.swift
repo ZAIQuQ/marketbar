@@ -50,6 +50,44 @@ func runArchiveChecks() async -> Bool {
         check(restoredPerpetual.references[utcReference.day] == utcReference, "UTC opening basis survives archive reload")
         check(FileManager.default.fileExists(atPath: temporary.appendingPathComponent("primary/SOXL-USDT-SWAP/2026-11-21.json").path),
               "OKX archives use UTC date rather than previous New York day")
+        let spot = MinuteCandle(symbol: "BTC-USDT", minute: perpetualTime,
+            open: 100_000, high: 100_100, low: 99_900, close: 100_050, volume: nil, session: .spot,
+            origin: .okx, firstEvent: perpetualTime, lastEvent: perpetualTime,
+            observedAt: perpetualTime.addingTimeInterval(60), sampleCount: 0, isFinal: true, volumeBase: 0.25)
+        let spotReference = ChartReference(day: "2026-11-21", previousClose: 99_000, basis: .utcOpen)
+        try await archive.save(symbol: spot.symbol, candles: [spot], references: [spotReference.day: spotReference])
+        let restoredSpot = try await archive.loadBundle(symbol: spot.symbol)
+        check(restoredSpot.candles == [spot], "spot OHLC, base volume, finality and session survive disk roundtrip")
+        check(restoredSpot.references[spotReference.day] == spotReference, "spot UTC opening baseline remains separate")
+        let spotFile = temporary.appendingPathComponent("primary/BTC-USDT/2026-11-21.json")
+        check(FileManager.default.fileExists(atPath: spotFile.path), "spot archives use a separate canonical instrument folder and UTC day")
+        let beforeInvalidSpot = try Data(contentsOf: spotFile)
+        for (session, contracts, origin, sampleCount) in [
+            (TradingSession.perpetual, Optional<Double>.none, CandleOrigin.okx, 0),
+            (TradingSession.spot, Optional(3.0), CandleOrigin.okx, 0),
+            (TradingSession.spot, Optional<Double>.none, CandleOrigin.mixed, 2)
+        ] {
+            let invalidSpot = MinuteCandle(symbol: spot.symbol, minute: perpetualTime,
+                open: 100_000, high: 100_100, low: 99_900, close: 100_050, volume: nil, session: session,
+                origin: origin, firstEvent: perpetualTime, lastEvent: perpetualTime,
+                observedAt: perpetualTime.addingTimeInterval(60), sampleCount: sampleCount, isFinal: true,
+                volumeContracts: contracts, volumeBase: 0.25)
+            do {
+                try await archive.save(symbol: spot.symbol, candles: [invalidSpot])
+                check(false, "spot cannot be persisted as perpetual, contract volume or mixed-volume data")
+            } catch CandleArchiveError.invalidCandle {
+                check(true, "spot cannot be persisted as perpetual, contract volume or mixed-volume data")
+            }
+        }
+        check(try Data(contentsOf: spotFile) == beforeInvalidSpot, "invalid spot writes preserve the existing file byte-for-byte")
+        let sampleMinute = perpetualTime.addingTimeInterval(60)
+        let spotSample = MinuteCandle(symbol: spot.symbol, minute: sampleMinute,
+            open: 100_050, high: 100_070, low: 100_050, close: 100_070, volume: nil, session: .spot,
+            origin: .localSample, firstEvent: sampleMinute, lastEvent: sampleMinute.addingTimeInterval(5),
+            observedAt: sampleMinute.addingTimeInterval(6), sampleCount: 2, volumeBase: 0.01)
+        try await archive.save(symbol: spot.symbol, candles: [spotSample])
+        check(try await archive.load(symbol: spot.symbol) == [spot, spotSample],
+              "local spot samples retain explicit base volume without inventing contract counts")
         let missingFinality = MinuteCandle(symbol: perpetual.symbol, minute: perpetualTime,
             open: 33, high: 34, low: 32, close: 33, volume: nil, session: .perpetual,
             origin: .okx, firstEvent: perpetualTime, lastEvent: perpetualTime,

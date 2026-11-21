@@ -227,7 +227,7 @@ public struct AnomalyDetector {
     }
 
     public mutating func ingestTrade(_ quote: PriceQuote, receivedAt: Date) {
-        guard Instrument.isOKX(symbol), quote.symbol == symbol, quote.session == .perpetual,
+        guard Instrument.isOKXPerpetual(symbol), quote.symbol == symbol, quote.session == .perpetual,
               quote.source == .stream, quote.recordsPriceSample,
               quote.price.isFinite, quote.price > 0, validDate(quote.timestamp), validDate(receivedAt),
               quote.timestamp <= receivedAt.addingTimeInterval(3),
@@ -267,7 +267,7 @@ public struct AnomalyDetector {
     }
 
     public mutating func ingestTicker(_ value: OKXTicker, receivedAt: Date) {
-        guard value.quote.symbol == symbol, value.quote.session == .perpetual,
+        guard Instrument.isOKXPerpetual(symbol), value.quote.symbol == symbol, value.quote.session == .perpetual,
               validDate(value.quote.timestamp), validDate(receivedAt),
               value.quote.timestamp <= receivedAt.addingTimeInterval(3),
               receivedAt.timeIntervalSince(value.quote.timestamp) <= 5 else { return }
@@ -276,6 +276,7 @@ public struct AnomalyDetector {
     }
 
     public mutating func ingestCandles(_ bars: [MinuteCandle]) {
+        guard Instrument.isOKXPerpetual(symbol) else { return }
         for bar in bars {
             guard bar.symbol == symbol, bar.origin == .okx, bar.isFinal != nil,
                   bar.session == .perpetual, validDate(bar.minute), validDate(bar.observedAt),
@@ -309,7 +310,7 @@ public struct AnomalyDetector {
         if let previous = evaluatedAt, second <= previous { return evaluation.withoutAlert }
         evaluatedAt = second
         guard configuration.enabled else { candidate = nil; return finish(.off, "提醒未启用") }
-        guard configuration.validationError == nil, Instrument.isOKX(symbol) else {
+        guard configuration.validationError == nil, Instrument.isOKXPerpetual(symbol) else {
             candidate = nil
             return finish(.off, configuration.validationError ?? "仅支持明确的 OKX USDT 永续合约")
         }

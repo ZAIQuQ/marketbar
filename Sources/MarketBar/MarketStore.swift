@@ -8,6 +8,9 @@ import TickerCore
 final class MarketStore: ObservableObject {
     let monitor: AlertMonitor
     @Published private(set) var symbols: [String]
+    /// Nil preserves the previous automatic selection until the first edit.
+    /// An empty array means the user intentionally wants the compact app name.
+    @Published private(set) var selectedMenuSymbols: [String]?
     @Published private(set) var quotes: [String: PriceQuote] = [:]
     @Published private(set) var connectionText = "尚未连接"
     @Published private(set) var connected = false
@@ -85,7 +88,26 @@ final class MarketStore: ObservableObject {
 
     func menuSymbols(at now: Date) -> [String] {
         let hideClosed = defaults.object(forKey: "hideClosedStocks") == nil || defaults.bool(forKey: "hideClosedStocks")
-        return hideClosed ? symbols.filter { !isStockClosed($0, at: now) } : symbols
+        let candidates = selectedMenuSymbols ?? symbols
+        let visible = candidates.filter { symbols.contains($0) && (!hideClosed || !isStockClosed($0, at: now)) }
+        if selectedMenuSymbols != nil { return visible }
+        let configured = defaults.integer(forKey: "menuSymbolCount")
+        return Array(visible.prefix(configured == 0 ? 2 : min(3, max(1, configured))))
+    }
+
+    func isSelectedForMenu(_ symbol: String, at now: Date = Date()) -> Bool {
+        (selectedMenuSymbols ?? menuSymbols(at: now)).contains(symbol)
+    }
+
+    func setSelectedForMenu(_ symbol: String, selected: Bool, at now: Date = Date()) {
+        guard symbols.contains(symbol) else { return }
+        if let saved = selectedMenuSymbols, saved.contains(symbol) == selected { return }
+        var selection = selectedMenuSymbols ?? menuSymbols(at: now)
+        selection.removeAll { $0 == symbol }
+        if selected { selection.append(symbol) }
+        guard selection != selectedMenuSymbols else { return }
+        selectedMenuSymbols = selection
+        defaults.set(selection, forKey: "MarketBar.menuSymbols")
     }
 
     func watchlistSymbols(at now: Date) -> [String] {
@@ -125,7 +147,12 @@ final class MarketStore: ObservableObject {
         self.archive = archive
         monitor = AlertMonitor(defaults: defaults, systemEffects: defaults === UserDefaults.standard)
         let stored = defaults.stringArray(forKey: "MarketBar.watchlist") ?? ["AMD", "NVDA"]
-        symbols = (try? Watchlist.parse(stored.joined(separator: ","))) ?? ["AMD", "NVDA"]
+        let normalized = (try? Watchlist.parse(stored.joined(separator: ","))) ?? ["AMD", "NVDA"]
+        symbols = normalized
+        if let saved = defaults.stringArray(forKey: "MarketBar.menuSymbols") {
+            var seen = Set<String>()
+            selectedMenuSymbols = saved.filter { normalized.contains($0) && seen.insert($0).inserted }
+        } else { selectedMenuSymbols = nil }
         let configuration = URLSessionConfiguration.ephemeral
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.urlCache = nil
@@ -278,6 +305,11 @@ final class MarketStore: ObservableObject {
         stop()
         symbols = normalized
         defaults.set(normalized, forKey: "MarketBar.watchlist")
+        if let selection = selectedMenuSymbols {
+            let retained = selection.filter { normalized.contains($0) }
+            selectedMenuSymbols = retained
+            defaults.set(retained, forKey: "MarketBar.menuSymbols")
+        }
         if !symbols.contains(monitor.symbol), monitor.isEnabled {
             var configuration = monitor.configuration
             configuration.enabled = false

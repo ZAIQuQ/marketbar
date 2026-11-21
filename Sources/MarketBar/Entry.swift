@@ -206,7 +206,7 @@ private final class LiveDiagnostic {
         if let index = CommandLine.arguments.firstIndex(of: "--render-chart"),
            CommandLine.arguments.indices.contains(index + 1),
            let symbol = store.symbols.first, let bars = store.candles[symbol], !bars.isEmpty {
-            let expectedSession: TradingSession = Instrument.isOKX(symbol) ? .perpetual : .pre
+            let expectedSession: TradingSession = Instrument.isOKX(symbol) ? Instrument.marketSession(symbol) : .pre
             let hover = CommandLine.arguments.contains("--render-hover") ? bars.last(where: { $0.session == expectedSession })?.minute : nil
             let view = IntradayChartView(symbol: symbol, candles: bars, loading: false, error: nil,
                                         references: store.chartReferences[symbol] ?? [:], initialHover: hover, onRefresh: {})

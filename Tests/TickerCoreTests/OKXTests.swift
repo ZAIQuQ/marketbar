@@ -11,7 +11,7 @@ final class OKXTests {
         XCTAssertEqual(try Watchlist.parse("AMD,NVDA"), ["AMD", "NVDA"])
         let maximum = String(repeating: "A", count: 22) + "-USDT-SWAP"
         XCTAssertEqual(try Watchlist.parse(maximum), [maximum])
-        for bad in [String(repeating: "A", count: 23) + "-USDT-SWAP", "SOXL-USDT", "SOXL-USD-SWAP", "SOXL--USDT-SWAP"] {
+        for bad in [String(repeating: "A", count: 23) + "-USDT-SWAP", "SOXL-USD-SWAP", "SOXL--USDT-SWAP"] {
             XCTAssertThrowsError(try Watchlist.parse(bad))
         }
     }

@@ -24,11 +24,13 @@ public struct MinuteCandle: Codable, Equatable, Identifiable {
     public let isFinal: Bool?
     /// Explicit OKX contract count. Never interpreted as shares or USDT value.
     public let volumeContracts: Double?
+    /// Explicit OKX spot base-asset quantity, never shares or contracts.
+    public let volumeBase: Double?
 
     public init(symbol: String, minute: Date, open: Double, high: Double, low: Double,
                 close: Double, volume: Double?, session: TradingSession, origin: CandleOrigin,
                 firstEvent: Date, lastEvent: Date, observedAt: Date, sampleCount: Int, isFinal: Bool? = nil,
-                volumeContracts: Double? = nil) {
+                volumeContracts: Double? = nil, volumeBase: Double? = nil) {
         self.symbol = symbol
         self.minute = minute
         self.open = open
@@ -44,6 +46,7 @@ public struct MinuteCandle: Codable, Equatable, Identifiable {
         self.sampleCount = sampleCount
         self.isFinal = isFinal
         self.volumeContracts = volumeContracts
+        self.volumeBase = volumeBase
     }
 }
 
@@ -149,6 +152,7 @@ public struct CandleBook {
         let session: TradingSession
         let tradeID: String?
         let sizeContracts: Double?
+        let sizeBase: Double?
     }
     private struct Samples {
         var restored: MinuteCandle?
@@ -206,6 +210,7 @@ public struct CandleBook {
     public mutating func ingest(_ quote: PriceQuote, receivedAt: Date) {
         guard quote.source == .stream, quote.recordsPriceSample, quote.price.isFinite, quote.price > 0,
               CandleValidation.symbol(quote.symbol), CandleValidation.date(quote.timestamp),
+              !Instrument.isOKX(quote.symbol) || quote.session == Instrument.marketSession(quote.symbol),
               CandleValidation.date(receivedAt) else { return }
         let key = Key(quote)
         if let id = quote.tradeID {
@@ -225,7 +230,7 @@ public struct CandleBook {
         var samples = local[key] ?? Samples()
         samples.events.append(Event(price: quote.price, time: quote.timestamp,
                                     receivedAt: receivedAt, session: quote.session,
-                                    tradeID: quote.tradeID, sizeContracts: quote.sizeContracts))
+                                    tradeID: quote.tradeID, sizeContracts: quote.sizeContracts, sizeBase: quote.sizeBase))
         local[key] = samples
         advanceMinute(key)
         if let latest = latestMinute[key.symbol], key.minute < latest { compact(key) }
@@ -307,23 +312,25 @@ public struct CandleBook {
         let high = max(events.map(\.price).max()!, saved?.high ?? first.price)
         let low = min(events.map(\.price).min()!, saved?.low ?? first.price)
         let session = saved.map { $0.firstEvent <= first.time ? $0.session : first.session } ?? first.session
-        var contracts: Double? = Instrument.isOKX(key.symbol) ? (saved == nil ? 0 : saved?.volumeContracts) : nil
+        let spot = Instrument.isOKXSpot(key.symbol)
+        var quantity: Double? = Instrument.isOKX(key.symbol)
+            ? (saved == nil ? 0 : (spot ? saved?.volumeBase : saved?.volumeContracts)) : nil
         for event in events {
             // An archive aggregate has no trade-ID membership list. Overlapping
             // late execution timestamps therefore cannot safely add volume.
-            guard let sum = contracts, event.tradeID != nil,
-                  let size = event.sizeContracts, size.isFinite, size > 0,
+            guard let sum = quantity, event.tradeID != nil,
+                  let size = spot ? event.sizeBase : event.sizeContracts, size.isFinite, size > 0,
                   saved == nil || event.time > saved!.lastEvent, (sum + size).isFinite else {
-                contracts = nil; continue
+                quantity = nil; continue
             }
-            contracts = sum + size
+            quantity = sum + size
         }
         return MinuteCandle(symbol: key.symbol, minute: key.minute, open: open, high: high, low: low,
             close: close, volume: nil, session: session, origin: .localSample,
             firstEvent: firstTime, lastEvent: lastTime,
             observedAt: max(events.map(\.receivedAt).max()!, saved?.observedAt ?? first.receivedAt),
             sampleCount: samples.count, isFinal: Instrument.isOKX(key.symbol) ? false : nil,
-            volumeContracts: contracts)
+            volumeContracts: spot ? nil : quantity, volumeBase: spot ? quantity : nil)
     }
 
     private func eventOrder(_ left: Event, _ right: Event) -> Bool {
@@ -374,14 +381,17 @@ private enum CandleValidation {
               value.sampleCount >= 0, value.sampleCount <= 10_000_000 else { return false }
         if let volume = value.volume, !volume.isFinite || volume < 0 { return false }
         if let contracts = value.volumeContracts,
-           !Instrument.isOKX(value.symbol) || !contracts.isFinite || contracts < 0 { return false }
+           !Instrument.isOKXPerpetual(value.symbol) || !contracts.isFinite || contracts < 0 { return false }
+        if let base = value.volumeBase,
+           !Instrument.isOKXSpot(value.symbol) || !base.isFinite || base < 0 { return false }
+        if Instrument.isOKX(value.symbol), value.session != Instrument.marketSession(value.symbol) { return false }
         switch value.origin {
         case .yahoo: return !Instrument.isOKX(value.symbol) && value.sampleCount == 0
         case .okx:
-            return Instrument.isOKX(value.symbol) && value.session == .perpetual
+            return Instrument.isOKX(value.symbol) && value.session == Instrument.marketSession(value.symbol)
                 && value.sampleCount == 0 && value.volume == nil && value.isFinal != nil
         case .localSample: return value.sampleCount > 0 && value.volume == nil
-        case .mixed: return value.sampleCount > 0 && value.volume == nil && value.volumeContracts == nil
+        case .mixed: return value.sampleCount > 0 && value.volume == nil && value.volumeContracts == nil && value.volumeBase == nil
         }
     }
 }

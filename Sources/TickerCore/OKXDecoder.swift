@@ -15,7 +15,7 @@ public struct OKXTicker {
     }
 }
 
-/// Parses public OKX perpetual market data. Ticker `ts` is a message-generation
+/// Parses public OKX spot/perpetual data. Ticker `ts` is a message-generation
 /// timestamp, so only the separate trades channel may create local OHLC samples.
 public enum OKXDecoder {
     public static func ticker(_ data: Data, expectedSymbol: String,
@@ -36,7 +36,7 @@ public enum OKXDecoder {
                 return value.isFinite ? value : nil
             }
             let quote = PriceQuote(symbol: expectedSymbol, price: price, timestamp: timestamp,
-                                   session: .perpetual, source: source,
+                                   session: Instrument.marketSession(expectedSymbol), source: source,
                                    changePercent: change, recordsPriceSample: false)
             let reference = positive(row["sodUtc0"]).map {
                 ChartReference(day: Instrument.day(expectedSymbol, at: timestamp),
@@ -61,9 +61,10 @@ public enum OKXDecoder {
                 throw QuoteError.malformedData
             }
             return PriceQuote(symbol: expectedSymbol, price: price, timestamp: timestamp,
-                              session: .perpetual, source: .stream, recordsPriceSample: true,
+                              session: Instrument.marketSession(expectedSymbol), source: .stream, recordsPriceSample: true,
                               tradeID: (row["tradeId"] as? String).flatMap { $0.isEmpty || $0.utf8.count > 128 ? nil : $0 },
-                              sizeContracts: positive(row["sz"]))
+                              sizeContracts: Instrument.isOKXPerpetual(expectedSymbol) ? positive(row["sz"]) : nil,
+                              sizeBase: Instrument.isOKXSpot(expectedSymbol) ? positive(row["sz"]) : nil)
         }.sorted { $0.timestamp < $1.timestamp }
     }
 
@@ -84,12 +85,13 @@ public enum OKXDecoder {
             let final = confirmation == "1"
             let candle = MinuteCandle(symbol: expectedSymbol, minute: minute,
                 open: open, high: high, low: low, close: close,
-                // SWAP's vol is a contract count. Do not label contracts as
-                // shares/base tokens or invent missing volume for local trades.
-                volume: nil, session: .perpetual, origin: .okx,
+                // SPOT's vol is base quantity; SWAP's vol counts contracts.
+                // Keep both separate from the legacy stock-volume field.
+                volume: nil, session: Instrument.marketSession(expectedSymbol), origin: .okx,
                 firstEvent: minute, lastEvent: minute, observedAt: receivedAt,
                 sampleCount: 0, isFinal: final,
-                volumeContracts: number(row[5]).flatMap { $0 >= 0 ? $0 : nil })
+                volumeContracts: Instrument.isOKXPerpetual(expectedSymbol) ? number(row[5]).flatMap { $0 >= 0 ? $0 : nil } : nil,
+                volumeBase: Instrument.isOKXSpot(expectedSymbol) ? number(row[5]).flatMap { $0 >= 0 ? $0 : nil } : nil)
             if let prior = minutes[minute], prior.isFinal == true, !final { continue }
             minutes[minute] = candle
         }
@@ -125,7 +127,8 @@ public enum OKXDecoder {
             guard let symbol = value as? String, symbol == expectedSymbol else { throw QuoteError.unexpectedSymbol }
         } else if requireID { throw QuoteError.unexpectedSymbol }
         if let value = fields["instType"] {
-            guard let type = value as? String, type == "SWAP" else { throw QuoteError.unexpectedSymbol }
+            let expectedType = Instrument.isOKXSpot(expectedSymbol) ? "SPOT" : "SWAP"
+            guard let type = value as? String, type == expectedType else { throw QuoteError.unexpectedSymbol }
         }
     }
 

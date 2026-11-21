@@ -1,7 +1,7 @@
 import Foundation
 
 public enum TradingSession: String, Codable, CaseIterable {
-    case pre, regular, post, closed, unknown, perpetual
+    case pre, regular, post, closed, unknown, perpetual, spot
 
     public var label: String {
         switch self {
@@ -11,6 +11,7 @@ public enum TradingSession: String, Codable, CaseIterable {
         case .closed: return "休市时段"
         case .unknown: return "时段未知"
         case .perpetual: return "永续"
+        case .spot: return "现货"
         }
     }
 
@@ -54,10 +55,12 @@ public struct PriceQuote: Equatable {
     public let recordsPriceSample: Bool
     public let tradeID: String?
     public let sizeContracts: Double?
+    /// Executed spot quantity in the base asset (e.g. BTC), never contracts.
+    public let sizeBase: Double?
 
     public init(symbol: String, price: Double, timestamp: Date, session: TradingSession,
                 source: QuoteSource, changePercent: Double? = nil, recordsPriceSample: Bool = true,
-                tradeID: String? = nil, sizeContracts: Double? = nil) {
+                tradeID: String? = nil, sizeContracts: Double? = nil, sizeBase: Double? = nil) {
         self.symbol = symbol
         self.price = price
         self.timestamp = timestamp
@@ -67,6 +70,7 @@ public struct PriceQuote: Equatable {
         self.recordsPriceSample = recordsPriceSample
         self.tradeID = tradeID
         self.sizeContracts = sizeContracts
+        self.sizeBase = sizeBase
     }
 }
 
@@ -91,9 +95,15 @@ public enum Watchlist {
         guard !parts.isEmpty else { throw QuoteError.invalidWatchlist("请至少输入一只股票代码。") }
         var symbols: [String] = []
         for raw in parts {
-            let symbol = raw == "NVIDIA" ? "NVDA" : raw == "SOXLUSDT" ? "SOXL-USDT-SWAP" : raw
+            let symbol: String
+            switch raw {
+            case "NVIDIA": symbol = "NVDA"
+            case "SOXLUSDT": symbol = "SOXL-USDT-SWAP"
+            case "BTCUSDT": symbol = "BTC-USDT"
+            default: symbol = raw
+            }
             guard Instrument.validSymbol(symbol) else {
-                throw QuoteError.invalidWatchlist("无效代码：\(raw)。请使用 AMD、NVDA 或 SOXL-USDT-SWAP 等明确代码。")
+                throw QuoteError.invalidWatchlist("无效代码：\(raw)。请使用 AMD、BTC-USDT 或 SOXL-USDT-SWAP 等明确代码。")
             }
             if !symbols.contains(symbol) { symbols.append(symbol) }
         }

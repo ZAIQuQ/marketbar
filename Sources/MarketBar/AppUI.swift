@@ -99,13 +99,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     private func updateTitle() {
-        let configured = UserDefaults.standard.integer(forKey: "menuSymbolCount")
-        let count = configured == 0 ? 2 : min(3, max(1, configured))
         let now = Date()
         let menuSymbols = store.menuSymbols(at: now)
-        let hiddenCount = max(0, store.symbols.count - menuSymbols.count)
-        let parts = menuSymbols.prefix(count).map { symbol -> String in
-            let name = Instrument.displaySymbol(symbol)
+        let hideClosed = UserDefaults.standard.object(forKey: "hideClosedStocks") == nil || UserDefaults.standard.bool(forKey: "hideClosedStocks")
+        let selected = store.selectedMenuSymbols ?? store.symbols
+        let hiddenCount = hideClosed ? selected.filter { store.isStockClosed($0, at: now) }.count : 0
+        let parts = menuSymbols.map { symbol -> String in
+            let name = Instrument.isOKXSpot(symbol) ? String(symbol.dropLast(5)) : Instrument.displaySymbol(symbol)
             let connection = store.isConnected(symbol: symbol) ? "" : "◌ "
             guard let quote = store.quotes[symbol] else { return "\(connection)\(name) —" }
             let old = now.timeIntervalSince(quote.timestamp) > 60
@@ -117,7 +117,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if statusItem.button?.title != title { statusItem.button?.title = title }
         let tooltip = (pending ? "SOXLUSDT 有已确认的异动，点击查看提醒。\n" : "")
             + (hiddenCount > 0 ? "\(hiddenCount) 只休市股票已隐藏，仍可在列表查看。\n" : "")
-            + "MarketBar · \(store.connectionText)\n前 / 中 / 后：报价时段 · 永：OKX 永续 · ≈：快照 · 旧：超过 60 秒未更新"
+            + "MarketBar · \(store.connectionText)\n前 / 中 / 后：报价时段 · 现：OKX 现货 · 永：OKX 永续 · ≈：快照 · 旧：超过 60 秒未更新"
         if statusItem.button?.toolTip != tooltip { statusItem.button?.toolTip = tooltip }
     }
 }
@@ -128,6 +128,7 @@ private func shortSession(_ session: TradingSession) -> String {
     case .regular: return "中"
     case .post: return "后"
     case .perpetual: return "永"
+    case .spot: return "现"
     case .closed: return "闭"
     case .unknown: return "?"
     }
@@ -137,7 +138,6 @@ struct TickerPanel: View {
     @ObservedObject var store: MarketStore
     var previewDate: Date? = nil
     var onChartVisibility: (Bool) -> Void = { _ in }
-    @AppStorage("menuSymbolCount") private var menuSymbolCount = 2
     @AppStorage("hideClosedStocks") private var hideClosedStocks = true
     @State private var editing = false
     @State private var draft = ""
@@ -194,11 +194,12 @@ struct TickerPanel: View {
                 MarketBrandMark()
                 VStack(alignment: .leading, spacing: 2) {
                     Text("MarketBar").font(.system(size: 18, weight: .semibold))
-                    Text(hasOKX ? (hasStocks ? "美股与永续" : "OKX 永续") : "美股自选")
+                    Text(hasOKX ? (hasStocks ? "美股与数字资产" : "OKX 行情") : "美股自选")
                         .font(.system(size: 11)).foregroundStyle(.secondary)
                 }
                 Spacer()
                 AlertToolbarButton(monitor: store.monitor, action: openMonitor)
+                menuSelectionControl
                 Button {
                     draft = store.symbols.joined(separator: ", ")
                     withAnimation(.easeOut(duration: 0.15)) { editing.toggle() }
@@ -271,7 +272,7 @@ struct TickerPanel: View {
                 Spacer()
                 Text("最多 12 只").font(.system(size: 10)).foregroundStyle(.secondary)
             }
-            TextField("AMD, NVDA, SOXLUSDT", text: $draft)
+            TextField("AMD, NVDA, BTCUSDT, SOXLUSDT", text: $draft)
                 .font(.system(size: 12, design: .monospaced))
                 .textFieldStyle(.roundedBorder).onSubmit(saveWatchlist)
                 .accessibilityLabel("自选股代码，逗号或空格分隔")
@@ -280,25 +281,39 @@ struct TickerPanel: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             HStack {
-                Text("菜单栏").font(.system(size: 11)).foregroundStyle(.secondary)
-                Picker("菜单栏显示数量", selection: $menuSymbolCount) {
-                    Text("1 只").tag(1)
-                    Text("2 只").tag(2)
-                    Text("3 只").tag(3)
-                }
-                .labelsHidden().pickerStyle(.segmented).frame(width: 126)
+                Text("顶部状态栏图标可勾选显示品种")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
                 Spacer()
                 Button("完成", action: saveWatchlist)
                     .buttonStyle(.borderedProminent).controlSize(.small).keyboardShortcut(.return)
             }
             Toggle("休市股票自动从菜单栏隐藏", isOn: $hideClosedStocks)
                 .font(.system(size: 11)).toggleStyle(.switch).controlSize(.small)
-                .help("列表仍保留这些股票，开市后自动恢复。永续合约不受影响。")
-            Text("逗号或空格分隔；SOXLUSDT 对应 SOXL-USDT-SWAP 永续。")
+                .help("已选股票开市后自动恢复。现货和永续不受影响。")
+            Text("BTCUSDT 为 OKX 现货，SOXLUSDT 为永续；逗号或空格分隔。")
                 .font(.system(size: 10)).foregroundStyle(.secondary)
         }
         .padding(12)
         .background(MarketTheme.subtleSurface, in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private var menuSelectionControl: some View {
+        Menu {
+            Text("状态栏显示")
+            ForEach(store.symbols, id: \.self) { symbol in
+                let kind = Instrument.isOKX(symbol) ? Instrument.marketSession(symbol).label : "美股"
+                Toggle("\(Instrument.displaySymbol(symbol)) · \(kind)", isOn: Binding(
+                    get: { store.isSelectedForMenu(symbol) },
+                    set: { store.setSelectedForMenu(symbol, selected: $0) }
+                ))
+            }
+        } label: {
+            Image(systemName: "menubar.rectangle")
+                .font(.system(size: 13)).frame(width: 26, height: 26)
+        }
+        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        .help("选择状态栏显示的品种")
+        .accessibilityLabel("选择状态栏显示的品种")
     }
 
     @ViewBuilder
@@ -312,7 +327,7 @@ struct TickerPanel: View {
                 VStack(alignment: .leading, spacing: 5) {
                     Text(Instrument.displaySymbol(symbol)).font(.system(size: 16, weight: .semibold))
                         .foregroundStyle(.primary).help(symbol)
-                    Text(perpetual ? "OKX 永续 · USDT" : names[symbol] ?? "美股")
+                    Text(perpetual ? "OKX \(Instrument.marketSession(symbol).label) · USDT" : names[symbol] ?? "美股")
                         .font(.system(size: 10)).foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
@@ -330,6 +345,7 @@ struct TickerPanel: View {
                             }
                             Text(quote.price.formatted(.number.precision(.fractionLength(2))))
                                 .font(.system(size: 23, weight: .medium, design: .monospaced))
+                                .lineLimit(1).minimumScaleFactor(0.75)
                                 .foregroundStyle(.primary)
                             if perpetual {
                                 Text("USDT").font(.system(size: 9, weight: .medium)).foregroundStyle(.secondary)

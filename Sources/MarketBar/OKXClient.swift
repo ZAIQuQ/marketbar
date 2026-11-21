@@ -61,13 +61,13 @@ final class OKXClient {
         var valid: [String] = []
         for symbol in incoming {
             guard symbol == symbol.uppercased(), Instrument.isOKX(symbol) else {
-                reportError(symbol, "OKX 需要完整永续合约代码，例如 SOXL-USDT-SWAP")
+                reportError(symbol, "OKX 需要完整交易代码，例如 BTC-USDT 或 SOXL-USDT-SWAP")
                 continue
             }
             if !valid.contains(symbol) { valid.append(symbol) }
         }
         guard valid.count <= 12 else {
-            for symbol in valid { reportError(symbol, "最多同时订阅 12 个合约") }
+            for symbol in valid { reportError(symbol, "最多同时订阅 12 个交易对或合约") }
             stop()
             return
         }
@@ -321,7 +321,7 @@ final class OKXClient {
                     ?? Array(requested)
                 let detail: String
                 switch code {
-                case "60018": detail = "OKX 未找到该合约或频道（60018）"
+                case "60018": detail = "OKX 未找到该品种或频道（60018）"
                 case "60014": detail = "OKX 请求过于频繁（60014）"
                 default: detail = "OKX 订阅失败（\(code)）"
                 }

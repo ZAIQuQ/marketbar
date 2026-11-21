@@ -1,18 +1,36 @@
 import Foundation
 
-/// Explicit OKX perpetual IDs stay separate from stock tickers. SOXL by itself
-/// is the US ETF; only SOXLUSDT or SOXL-USDT-SWAP selects the perpetual.
+/// Explicit OKX IDs keep spot, perpetuals, and stock tickers separate. Bare
+/// BTC and SOXL retain their stock meanings; watchlist aliases are deliberate.
 public enum Instrument {
     public static func isOKX(_ symbol: String) -> Bool {
+        isOKXSpot(symbol) || isOKXPerpetual(symbol)
+    }
+
+    public static func isOKXPerpetual(_ symbol: String) -> Bool {
         let value = symbol.uppercased()
         guard value.hasSuffix("-USDT-SWAP") else { return false }
         let base = value.dropLast(10).utf8
         return (1...22).contains(base.count) && base.allSatisfy { (65...90).contains($0) || (48...57).contains($0) }
     }
 
+    public static func isOKXSpot(_ symbol: String) -> Bool {
+        let value = symbol.uppercased()
+        guard value.hasSuffix("-USDT") else { return false }
+        let base = value.dropLast(5).utf8
+        return (1...27).contains(base.count) && base.allSatisfy { (65...90).contains($0) || (48...57).contains($0) }
+    }
+
+    public static func marketSession(_ symbol: String) -> TradingSession {
+        if isOKXSpot(symbol) { return .spot }
+        if isOKXPerpetual(symbol) { return .perpetual }
+        return .unknown
+    }
+
     public static func displaySymbol(_ symbol: String) -> String {
         guard isOKX(symbol) else { return symbol }
-        return String(symbol.uppercased().dropLast(5)).replacingOccurrences(of: "-", with: "")
+        let value = isOKXPerpetual(symbol) ? String(symbol.uppercased().dropLast(5)) : symbol.uppercased()
+        return value.replacingOccurrences(of: "-", with: "")
     }
 
     public static func currency(_ symbol: String) -> String { isOKX(symbol) ? "USDT" : "USD" }

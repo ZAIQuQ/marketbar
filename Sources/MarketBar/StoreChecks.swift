@@ -101,6 +101,32 @@ func runStoreChecks() -> Bool {
     defaults.set(false, forKey: "hideClosedStocks")
     check(store.menuSymbols(at: weekend) == ["AMD", contract], "closed-stock hiding can be disabled")
 
+    store.setSymbols(["AMD", "NVDA", contract, "BTC-USDT"])
+    defaults.set(true, forKey: "hideClosedStocks")
+    check(store.menuSymbols(at: weekend) == [contract, "BTC-USDT"], "legacy automatic selection keeps both 24-hour markets")
+    store.setSelectedForMenu(contract, selected: false, at: weekend)
+    check(store.menuSymbols(at: weekend) == ["BTC-USDT"], "manual selection can hide an active instrument")
+    store.setSelectedForMenu(contract, selected: true, at: weekend)
+    check(store.menuSymbols(at: weekend) == ["BTC-USDT", contract], "BTC spot and SOXL perpetual both fit selected menu")
+    store.setSelectedForMenu(contract, selected: true, at: weekend)
+    check(defaults.stringArray(forKey: "MarketBar.menuSymbols") == ["BTC-USDT", contract], "selection is persisted without duplicates")
+    store.setSelectedForMenu("AMD", selected: true, at: weekend)
+    check(store.isSelectedForMenu("AMD", at: weekend), "closed stock retains its selected checkbox")
+    check(!store.menuSymbols(at: weekend).contains("AMD"), "closed selected stock still hides")
+    defaults.set(false, forKey: "hideClosedStocks")
+    check(store.menuSymbols(at: weekend).contains("AMD"), "selected closed stock reappears when hiding is disabled")
+    let restored = MarketStore(defaults: defaults, archive: nil)
+    defer { restored.stop() }
+    check(restored.selectedMenuSymbols == ["BTC-USDT", contract, "AMD"], "manual choices survive restart")
+    store.setSymbols(["AMD", "NVDA", contract])
+    check(store.selectedMenuSymbols == [contract, "AMD"], "watchlist removal prunes only the removed menu symbol")
+    store.setSelectedForMenu(contract, selected: false, at: weekend)
+    store.setSelectedForMenu("AMD", selected: false, at: weekend)
+    check(store.menuSymbols(at: weekend).isEmpty, "explicit empty choice does not repopulate the menu")
+    check(store.symbols == ["AMD", "NVDA", contract], "menu selections never unsubscribe or remove the watchlist")
+    store.setSelectedForMenu("BTC-USDT", selected: true, at: weekend)
+    check(store.selectedMenuSymbols == [], "cannot select an instrument outside the watchlist")
+
     if failures.isEmpty {
         print("PASS store checks: \(count) deterministic checks (no network)")
         return true

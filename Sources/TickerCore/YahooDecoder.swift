@@ -101,7 +101,7 @@ public enum YahooDecoder {
         switch chosen.session {
         case .post: reference = regularPrice
         case .pre, .regular: reference = previousClose
-        case .closed, .unknown, .perpetual: reference = nil
+        case .closed, .unknown, .perpetual, .spot: reference = nil
         }
         let change = reference.map { (chosen.price / $0 - 1) * 100 }
         let quote = PriceQuote(symbol: symbol.uppercased(), price: chosen.price, timestamp: chosen.date,

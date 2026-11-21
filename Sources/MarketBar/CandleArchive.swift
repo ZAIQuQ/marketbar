@@ -10,7 +10,7 @@ enum CandleArchiveError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalidSymbol:
-            return "本地行情缓存的股票代码无效。"
+            return "本地行情缓存的交易代码无效。"
         case .invalidCandle(let detail):
             return "本地行情缓存未写入：\(detail)"
         case .invalidFile(let name):
@@ -22,7 +22,7 @@ enum CandleArchiveError: Error, LocalizedError {
 }
 
 /// Serializes disk access away from the main actor. Files are never pruned:
-/// only the newest ten NY trading dates are loaded into the running app.
+/// only the newest ten market dates are loaded (equities: NY; OKX: UTC).
 actor CandleArchive {
     private struct DayFile: Codable {
         let schemaVersion: Int
@@ -124,7 +124,7 @@ actor CandleArchive {
                 merged[candle.minute] = candle
             }
             guard merged.count <= 1_500 else {
-                throw CandleArchiveError.invalidCandle("同一纽约日期的分钟数量超出范围。")
+                throw CandleArchiveError.invalidCandle("同一行情日期的分钟数量超出范围。")
             }
             let document = DayFile(schemaVersion: 1, symbol: symbol, day: day,
                 candles: merged.values.sorted { $0.minute < $1.minute }, previousClose: previousClose,
@@ -151,10 +151,10 @@ actor CandleArchive {
         do {
             let values = try url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
             guard values.isDirectory == true, values.isSymbolicLink != true else {
-                throw CandleArchiveError.unavailable("股票缓存路径不是普通目录。")
+                throw CandleArchiveError.unavailable("行情缓存路径不是普通目录。")
             }
         } catch let error as CandleArchiveError { throw error }
-        catch { throw CandleArchiveError.unavailable("无法读取股票缓存目录。") }
+        catch { throw CandleArchiveError.unavailable("无法读取行情缓存目录。") }
     }
 
     private func validDay(_ value: String) -> Bool {
@@ -195,13 +195,26 @@ actor CandleArchive {
               candle.minute.timeIntervalSince1970.isFinite,
               (946_684_800..<4_102_444_800).contains(candle.minute.timeIntervalSince1970),
               abs(candle.minute.timeIntervalSince1970.truncatingRemainder(dividingBy: 60)) < 0.001 else {
-            throw CandleArchiveError.invalidCandle("股票代码或分钟时间戳不匹配。")
+            throw CandleArchiveError.invalidCandle("交易代码或分钟时间戳不匹配。")
         }
         let prices = [candle.open, candle.high, candle.low, candle.close]
         guard prices.allSatisfy({ $0.isFinite && $0 > 0 }),
               candle.high >= max(candle.open, candle.close),
               candle.low <= min(candle.open, candle.close), candle.low <= candle.high else {
             throw CandleArchiveError.invalidCandle("K 线价格不满足 OHLC 约束。")
+        }
+        if Instrument.isOKX(symbol), candle.session != Instrument.marketSession(symbol) {
+            throw CandleArchiveError.invalidCandle("现货或永续时段与交易代码不匹配。")
+        }
+        if let baseVolume = candle.volumeBase {
+            guard Instrument.isOKXSpot(symbol), baseVolume.isFinite, baseVolume >= 0 else {
+                throw CandleArchiveError.invalidCandle("现货基础币成交量无效。")
+            }
+        }
+        if let contracts = candle.volumeContracts {
+            guard Instrument.isOKXPerpetual(symbol), contracts.isFinite, contracts >= 0 else {
+                throw CandleArchiveError.invalidCandle("永续合约张数无效。")
+            }
         }
         let eventDates = [candle.firstEvent, candle.lastEvent, candle.observedAt]
         guard eventDates.allSatisfy({ $0.timeIntervalSince1970.isFinite
@@ -219,13 +232,18 @@ actor CandleArchive {
                 throw CandleArchiveError.invalidCandle("远端 K 线不能包含本地样本计数。")
             }
         case .okx:
-            guard Instrument.isOKX(candle.symbol), candle.session == .perpetual,
+            guard Instrument.isOKX(candle.symbol), candle.session == Instrument.marketSession(symbol),
                   candle.isFinal != nil, candle.volume == nil, candle.sampleCount == 0 else {
-                throw CandleArchiveError.invalidCandle("OKX K 线的合约、时段或完成状态无效。")
+                throw CandleArchiveError.invalidCandle("OKX K 线的品种、时段或完成状态无效。")
             }
-        case .localSample, .mixed:
+        case .localSample:
             guard candle.sampleCount > 0, candle.volume == nil else {
-                throw CandleArchiveError.invalidCandle("本地或混合 K 线缺少样本，或混入未验证成交量。")
+                throw CandleArchiveError.invalidCandle("本地 K 线缺少样本，或混入未验证成交量。")
+            }
+        case .mixed:
+            guard candle.sampleCount > 0, candle.volume == nil,
+                  candle.volumeBase == nil, candle.volumeContracts == nil else {
+                throw CandleArchiveError.invalidCandle("混合 K 线缺少样本，或包含可能重复的成交量。")
             }
         }
     }

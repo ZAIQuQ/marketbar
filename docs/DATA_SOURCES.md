@@ -31,21 +31,21 @@ MarketBar 通过 Yahoo Finance 的公开网页行情接口获取美股报价，�
 
 ## 本地保存
 
-文件保存在 `~/Library/Application Support/MarketBar/Candles/<品种>/<日期>.json`，包含分钟数据、来源和涨跌基准。美股按纽约日期、OKX 合约按 UTC 日期保存。
+文件保存在 `~/Library/Application Support/MarketBar/Candles/<品种>/<日期>.json`，包含分钟数据、来源和涨跌基准。美股按纽约日期、OKX 现货与合约按 UTC 日期保存。
 
 - 约每 10 秒保存变更，正常退出时再保存；强制结束可能丢失尚未保存的样本。
 - 每日文件原子替换。损坏文件会报告错误并保留，不被新数据静默覆盖。
 - 启动时加载每只股票最近 10 个已保存日期；旧文件不会自动删除。
 - 混合数据保留来源标记；重新联网后，更新的完整线上分钟数据可替代缓存中的混合记录。
 
-## OKX USDT 永续
+## OKX USDT 现货与永续
 
-`SOXLUSDT` 规范化为 `SOXL-USDT-SWAP`；`SOXL` 仍指美股。合约数据使用 `wss://ws.okx.com/ws/v5/public` 的 `tickers` 和 `trades` 频道，不登录、不访问账户接口。
+`BTCUSDT` 规范化为 `BTC-USDT` 现货，裸 `BTC` 保持美股代码；`SOXLUSDT` 规范化为 `SOXL-USDT-SWAP`；`SOXL` 仍指美股。现货与合约数据使用 `wss://ws.okx.com/ws/v5/public` 的 `tickers` 和 `trades` 频道，不登录、不访问账户接口。
 
 - `tickers.last` 为最新成交价，`ts` 是行情消息生成时间。盘口变化也可能触发消息，因此 ticker 不生成本地成交 K 线。
 - `trades.px/ts` 用于本地分钟采样。REST `market/candles` 回填最近 300 根分钟 K 线，`confirm` 区分未结束和已结束的分钟。
 - 列表涨跌幅使用 `last/open24h-1`；图表按 UTC 日期组织，以 `sodUtc0` 为当日开盘基准。二者均在界面注明。
-- 合约价格单位为 USDT。成交量的合约张数不混用为股票股数，当前界面不显示合约成交量。
+- 现货与永续价格均为 USDT。现货 `sz`／`vol` 按基础币数量保存（BTC-USDT 为 BTC），永续按合约张数保存；两种单位分开，也不混用为股票股数。现货不会进入 SOXL 永续提醒策略。
 - 行情连接独立于 Yahoo。WebSocket 空闲时以 `ping/pong` 保活，断开后退避重连；不会每隔几秒重复提交订阅。
 
 接口字段及频率以 [OKX 官方 API 文档](https://www.okx.com/docs-v5/en/)为准。
