@@ -37,6 +37,35 @@ final class MarketStore: ObservableObject {
     private var keepaliveTask: Task<Void, Never>?
     private var pollingTask: Task<Void, Never>?
     private var snapshotTask: Task<Void, Never>?
+    private var okxClient: OKXClient?
+    private var yahooConnected = false
+    private var yahooStatus = "尚未连接"
+    private var okxConnected = false
+    private var okxStatus = "尚未连接"
+    private var okxStreamErrors: [String: String] = [:]
+
+    func isConnected(symbol: String) -> Bool {
+        Instrument.isOKX(symbol) ? okxConnected : yahooConnected
+    }
+
+    func connectionLabel(symbol: String) -> String {
+        Instrument.isOKX(symbol) ? okxStatus : yahooStatus
+    }
+
+    private func updateConnectionSummary() {
+        let usesYahoo = symbols.contains { !Instrument.isOKX($0) }
+        let usesOKX = symbols.contains { Instrument.isOKX($0) }
+        connected = (!usesYahoo || yahooConnected) && (!usesOKX || okxConnected)
+        if usesYahoo && usesOKX {
+            connectionText = connected ? "行情已连接" : "Yahoo：\(yahooStatus) · OKX：\(okxStatus)"
+        } else { connectionText = usesOKX ? okxStatus : yahooStatus }
+    }
+
+    private func updateYahooStatus(_ value: Bool, _ text: String) {
+        yahooConnected = value
+        yahooStatus = text
+        updateConnectionSummary()
+    }
 
     init(defaults: UserDefaults = .standard, archive: CandleArchive? = CandleArchive()) {
         self.defaults = defaults
@@ -57,8 +86,33 @@ final class MarketStore: ObservableObject {
         generation &+= 1
         let token = generation
         prepareHistory()
-        streamTask = Task { [weak self] in
-            await self?.runStream(generation: token)
+        if symbols.contains(where: { !Instrument.isOKX($0) }) {
+            streamTask = Task { [weak self] in await self?.runStream(generation: token) }
+        }
+        let okxSymbols = symbols.filter { Instrument.isOKX($0) }
+        if !okxSymbols.isEmpty {
+            let client = OKXClient(onTicker: { [weak self] ticker in
+                guard let self, self.isCurrent(token) else { return }
+                self.ingest(ticker.quote, received: Date())
+                if let reference = ticker.reference {
+                    self.chartReferences[ticker.quote.symbol, default: [:]][reference.day] = reference
+                    self.dirtyDays[ticker.quote.symbol, default: []].insert(reference.day)
+                }
+            }, onTrades: { [weak self] trades in
+                guard let self, self.isCurrent(token) else { return }
+                self.ingestTrades(trades, received: Date())
+            }, onStatus: { [weak self] connected, message in
+                guard let self, self.isCurrent(token) else { return }
+                self.okxConnected = connected
+                self.okxStatus = message
+                self.updateConnectionSummary()
+            }, onError: { [weak self] symbol, message in
+                guard let self, self.isCurrent(token) else { return }
+                self.okxStreamErrors[symbol] = message.isEmpty ? nil : message
+                self.symbolErrors[symbol] = self.okxStreamErrors[symbol]
+            })
+            okxClient = client
+            client.start(symbols: okxSymbols)
         }
         refreshSnapshots()
         pollingTask = Task { [weak self] in
@@ -86,6 +140,8 @@ final class MarketStore: ObservableObject {
         keepaliveTask?.cancel()
         pollingTask?.cancel()
         snapshotTask?.cancel()
+        okxClient?.stop()
+        okxClient = nil
         persistenceTask?.cancel()
         socket?.cancel(with: .goingAway, reason: nil)
         streamTask = nil
@@ -96,6 +152,10 @@ final class MarketStore: ObservableObject {
         historyLoading = false
         socket = nil
         connected = false
+        yahooConnected = false
+        okxConnected = false
+        yahooStatus = "已暂停"
+        okxStatus = "已暂停"
         connectionText = "已暂停"
         Task { await flushHistory() }
     }
@@ -138,7 +198,7 @@ final class MarketStore: ObservableObject {
                     }
                     if let quote = result.quote {
                         self.ingest(quote, received: Date())
-                        self.symbolErrors[result.symbol] = nil
+                        self.symbolErrors[result.symbol] = self.okxStreamErrors[result.symbol]
                     } else if let error = result.error {
                         // A failed fallback request is separate from transport health.
                         self.symbolErrors[result.symbol] = error
@@ -173,13 +233,7 @@ final class MarketStore: ObservableObject {
         guard symbols.contains(quote.symbol), quote.price.isFinite, quote.price > 0,
               quote.timestamp.timeIntervalSince1970.isFinite,
               quote.timestamp <= received.addingTimeInterval(30) else { return false }
-        if quote.source == .stream {
-            var book = books[quote.symbol] ?? CandleBook()
-            book.ingest(quote, receivedAt: received)
-            books[quote.symbol] = book
-            candles[quote.symbol] = book.candles
-            markDirty(quote.symbol, minutes: [quote.timestamp])
-        }
+        if quote.source == .stream && quote.recordsPriceSample { recordSample(quote, received: received) }
         if let previous = quotes[quote.symbol] {
             guard quote.timestamp >= previous.timestamp else { return false }
             if quote.timestamp == previous.timestamp,
@@ -189,7 +243,7 @@ final class MarketStore: ObservableObject {
         receivedAt[quote.symbol] = received
         if quote.source == .stream {
             deliveryLag[quote.symbol] = received.timeIntervalSince(quote.timestamp)
-            symbolErrors[quote.symbol] = nil
+            symbolErrors[quote.symbol] = okxStreamErrors[quote.symbol]
         } else {
             deliveryLag[quote.symbol] = nil
         }
@@ -200,11 +254,24 @@ final class MarketStore: ObservableObject {
         running && generation == token
     }
 
+    private func recordSample(_ quote: PriceQuote, received: Date) {
+        guard symbols.contains(quote.symbol), quote.recordsPriceSample,
+              quote.timestamp <= received.addingTimeInterval(30) else { return }
+        var book = books[quote.symbol] ?? CandleBook()
+        book.ingest(quote, receivedAt: received)
+        books[quote.symbol] = book
+        candles[quote.symbol] = book.candles
+        markDirty(quote.symbol, minutes: [quote.timestamp])
+    }
+
+    func ingestTrades(_ trades: [PriceQuote], received: Date) {
+        for trade in trades where Instrument.isOKX(trade.symbol) { recordSample(trade, received: received) }
+    }
+
     private func runStream(generation token: UInt64) async {
         var failures = 0
         while isCurrent(token), !Task.isCancelled {
-            connected = false
-            connectionText = failures == 0 ? "正在连接推送…" : "正在重新连接…"
+            updateYahooStatus(false, failures == 0 ? "正在连接推送…" : "正在重新连接…")
             var request = URLRequest(url: URL(string: "wss://streamer.finance.yahoo.com/?version=2")!)
             request.setValue("Mozilla/5.0 MarketBar/1.0", forHTTPHeaderField: "User-Agent")
             let currentSocket = session.webSocketTask(with: request)
@@ -217,8 +284,7 @@ final class MarketStore: ObservableObject {
                     currentSocket.cancel(with: .goingAway, reason: nil)
                     return
                 }
-                connected = true
-                connectionText = "推送已连接 · 等待报价"
+                updateYahooStatus(true, "推送已连接 · 等待报价")
                 startKeepalive(on: currentSocket, generation: token)
                 while isCurrent(token), !Task.isCancelled {
                     let message = try await currentSocket.receive()
@@ -233,12 +299,10 @@ final class MarketStore: ObservableObject {
                         do {
                             if let quote = try YahooDecoder.stream(text) {
                                 let accepted = ingest(quote, received: Date())
-                                if accepted, connectionText != "推送已连接" {
-                                    connectionText = "推送已连接"
-                                }
+                                if accepted, yahooStatus != "推送已连接" { updateYahooStatus(true, "推送已连接") }
                             }
                         } catch {
-                            connectionText = "推送格式异常 · 使用备用快照"
+                            updateYahooStatus(true, "推送格式异常 · 使用备用快照")
                         }
                     }
                 }
@@ -250,18 +314,17 @@ final class MarketStore: ObservableObject {
             keepaliveTask = nil
             currentSocket.cancel(with: .goingAway, reason: nil)
             if socket === currentSocket { socket = nil }
-            connected = false
             if Date().timeIntervalSince(began) >= 30 { failures = 0 }
             failures = min(failures + 1, 6)
             let delay = min(pow(2, Double(failures)), 60) + Double.random(in: 0...1)
-            connectionText = "推送断开 · \(Int(delay)) 秒后重连"
+            updateYahooStatus(false, "推送断开 · \(Int(delay)) 秒后重连")
             do { try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
             catch { return }
         }
     }
 
     private func subscribe(on socket: URLSessionWebSocketTask) async throws {
-        let body = try JSONSerialization.data(withJSONObject: ["subscribe": symbols])
+        let body = try JSONSerialization.data(withJSONObject: ["subscribe": symbols.filter { !Instrument.isOKX($0) }])
         try await socket.send(.string(String(decoding: body, as: UTF8.self)))
     }
 
@@ -326,6 +389,7 @@ final class MarketStore: ObservableObject {
     }
 
     private nonisolated static func fetchSnapshot(symbol: String, session: URLSession) async -> SnapshotResult {
+        if Instrument.isOKX(symbol) { return await fetchOKXSnapshot(symbol: symbol, session: session) }
         var lastError = "备用快照暂不可用"
         for host in ["query2.finance.yahoo.com", "query1.finance.yahoo.com"] {
             guard !Task.isCancelled else { break }
@@ -368,6 +432,44 @@ final class MarketStore: ObservableObject {
         return SnapshotResult(symbol: symbol, quote: nil, candles: nil, reference: nil, error: lastError)
     }
 
+    private nonisolated static func fetchOKXSnapshot(symbol: String, session: URLSession) async -> SnapshotResult {
+        async let tickerData = okxData(path: "/api/v5/market/ticker", symbol: symbol, candles: false, session: session)
+        async let candleData = okxData(path: "/api/v5/market/candles", symbol: symbol, candles: true, session: session)
+        let (tickerResult, candleResult) = await (tickerData, candleData)
+        var ticker: OKXTicker?
+        var bars: [MinuteCandle]?
+        var failure: String?
+        do { ticker = try OKXDecoder.ticker(tickerResult.get(), expectedSymbol: symbol, source: .snapshot) }
+        catch { failure = "OKX 报价暂不可用：\(error.localizedDescription)" }
+        do { bars = try OKXDecoder.candles(candleResult.get(), expectedSymbol: symbol, receivedAt: Date()) }
+        catch { if failure == nil { failure = "OKX 分钟数据暂不可用" } }
+        return SnapshotResult(symbol: symbol, quote: ticker?.quote, candles: bars,
+                              reference: ticker?.reference, error: failure)
+    }
+
+    private nonisolated static func okxData(path: String, symbol: String, candles: Bool,
+                                           session: URLSession) async -> Result<Data, Error> {
+        var components = URLComponents()
+        components.scheme = "https"
+        components.host = "www.okx.com"
+        components.path = path
+        components.queryItems = [URLQueryItem(name: "instId", value: symbol)]
+        if candles {
+            components.queryItems! += [URLQueryItem(name: "bar", value: "1m"), URLQueryItem(name: "limit", value: "300")]
+        }
+        guard let url = components.url else { return .failure(URLError(.badURL)) }
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 12)
+        request.setValue("Mozilla/5.0", forHTTPHeaderField: "User-Agent")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard (response as? HTTPURLResponse)?.statusCode == 200, data.count < 4_194_304 else {
+                return .failure(URLError(.badServerResponse))
+            }
+            return .success(data)
+        } catch { return .failure(error) }
+    }
+
     func prepareHistory() {
         guard let archive else { return }
         for symbol in symbols where !loadedHistory.contains(symbol) && !loadingHistory.contains(symbol) {
@@ -398,7 +500,7 @@ final class MarketStore: ObservableObject {
     }
 
     private func markDirty(_ symbol: String, minutes: [Date]) {
-        for minute in minutes { dirtyDays[symbol, default: []].insert(Self.historyDay(minute)) }
+        for minute in minutes { dirtyDays[symbol, default: []].insert(Instrument.day(symbol, at: minute)) }
     }
 
     func finishHistory() async {
@@ -420,7 +522,7 @@ final class MarketStore: ObservableObject {
         for (symbol, days) in pending {
             guard loadedHistory.contains(symbol), !blockedHistory.contains(symbol),
                   let book = books[symbol] else { continue }
-            let bars = book.candles.filter { days.contains(Self.historyDay($0.minute)) }
+            let bars = book.candles.filter { days.contains(Instrument.day(symbol, at: $0.minute)) }
             dirtyDays[symbol]?.subtract(days)
             do {
                 try await archive.save(symbol: symbol, candles: bars, references: chartReferences[symbol] ?? [:])
@@ -435,15 +537,4 @@ final class MarketStore: ObservableObject {
         }
     }
 
-    private static func historyDay(_ date: Date) -> String {
-        historyDateFormatter.string(from: date)
-    }
-
-    private static let historyDateFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "America/New_York")!
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter
-    }()
 }

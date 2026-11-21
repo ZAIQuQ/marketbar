@@ -50,6 +50,7 @@ struct CoreTestRunner {
         let watchlist = WatchlistTests()
         let candles = CandleTests()
         let references = ChartReferenceTests()
+        let okx = OKXTests()
         let tests: [(String, () throws -> Void)] = [
             ("observed premarket stream", decoder.testObservedPremarketFrameAndJSONEnvelope),
             ("stream session flags", decoder.testPremarketRegularAndPostmarketFlags),
@@ -85,7 +86,17 @@ struct CoreTestRunner {
             ("reference rejects mismatched days and ranges", references.testMismatchedDaysAndLongRangeHaveNoReference),
             ("reference validates baseline currency and symbol", references.testMissingBaselineInvalidPriceCurrencyAndSymbol),
             ("reference ignores null future bar", references.testNullFutureBarCannotSelectWrongTradingDay),
-            ("reference percent calculation and persistence", references.testPercentChangeAndCodable)
+            ("reference percent calculation and persistence", references.testPercentChangeAndCodable),
+            ("OKX explicit perpetual symbols and alias", okx.testPerpetualWatchlistAliasesDoNotChangeEquityMeaning),
+            ("OKX display units and UTC partition", okx.testPerpetualDisplayCurrencyAndUTCPartition),
+            ("OKX observed ticker and UTC open", okx.testObservedTickerHasMessageTimestampAndUTCOpenReference),
+            ("OKX tickers never generate candle samples", okx.testBidAskTickerUpdatesNeverGeneratePriceSamples),
+            ("OKX errors and instrument mismatches", okx.testTickerRejectsProviderErrorsAndWrongInstrument),
+            ("OKX executions generate local samples", okx.testTradesUseExecutionTimeAndCreateLocalSamples),
+            ("OKX candle confirmation and invalid rows", okx.testCandlesDecodeConfirmationAndSkipInvalidRows),
+            ("OKX final candle precedence and restore", okx.testOKXFinalFlagControlsCompletionAndLaterPartialCannotReopen),
+            ("OKX current candle upserts", okx.testOKXCurrentMinuteUpsertsAndOlderResponseIsIgnored),
+            ("OKX model additions preserve legacy JSON", okx.testLegacyReferenceAndCandleJSONStillDecode)
         ]
         for (name, test) in tests {
             let before = failureCount

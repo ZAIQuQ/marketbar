@@ -37,11 +37,11 @@ cat > "$marketbar_app/Contents/Info.plist" <<'PLIST'
 <plist version="1.0"><dict>
 <key>CFBundleIdentifier</key><string>local.leoping.MarketBar</string>
 <key>CFBundleName</key><string>MarketBar</string>
-<key>CFBundleDisplayName</key><string>MarketBar 美股行情</string>
+<key>CFBundleDisplayName</key><string>MarketBar 行情</string>
 <key>CFBundleExecutable</key><string>MarketBar</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.3.0</string>
-<key>CFBundleVersion</key><string>4</string>
+<key>CFBundleShortVersionString</key><string>0.4.0</string>
+<key>CFBundleVersion</key><string>5</string>
 <key>LSMinimumSystemVersion</key><string>13.0</string>
 <key>LSUIElement</key><true/>
 <key>NSHighResolutionCapable</key><true/>

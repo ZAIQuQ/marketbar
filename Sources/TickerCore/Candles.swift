@@ -2,7 +2,7 @@ import Foundation
 import CoreFoundation
 
 public enum CandleOrigin: String, Codable {
-    case yahoo, localSample, mixed
+    case yahoo, okx, localSample, mixed
 }
 
 public struct MinuteCandle: Codable, Equatable, Identifiable {
@@ -20,10 +20,12 @@ public struct MinuteCandle: Codable, Equatable, Identifiable {
     public let lastEvent: Date
     public let observedAt: Date
     public let sampleCount: Int
+    /// OKX's explicit candle confirmation. Nil preserves older Yahoo caches.
+    public let isFinal: Bool?
 
     public init(symbol: String, minute: Date, open: Double, high: Double, low: Double,
                 close: Double, volume: Double?, session: TradingSession, origin: CandleOrigin,
-                firstEvent: Date, lastEvent: Date, observedAt: Date, sampleCount: Int) {
+                firstEvent: Date, lastEvent: Date, observedAt: Date, sampleCount: Int, isFinal: Bool? = nil) {
         self.symbol = symbol
         self.minute = minute
         self.open = open
@@ -37,6 +39,7 @@ public struct MinuteCandle: Codable, Equatable, Identifiable {
         self.lastEvent = lastEvent
         self.observedAt = observedAt
         self.sampleCount = sampleCount
+        self.isFinal = isFinal
     }
 }
 
@@ -156,7 +159,7 @@ public struct CandleBook {
     public init() {}
 
     public mutating func mergeRemote(_ incoming: [MinuteCandle]) {
-        for candle in incoming where candle.origin == .yahoo && CandleValidation.candle(candle) {
+        for candle in incoming where (candle.origin == .yahoo || candle.origin == .okx) && CandleValidation.candle(candle) {
             let key = Key(candle)
             if let existing = remote[key], existing.observedAt > candle.observedAt { continue }
             let complete = isCompleteSourceBar(candle)
@@ -177,7 +180,8 @@ public struct CandleBook {
                     volume: existing.origin == .mixed ? nil : [existing.volume, candle.volume].compactMap { $0 }.max(),
                     session: first.session, origin: existing.origin,
                     firstEvent: first.firstEvent, lastEvent: last.lastEvent,
-                    observedAt: candle.observedAt, sampleCount: existing.sampleCount)
+                    observedAt: candle.observedAt, sampleCount: existing.sampleCount,
+                    isFinal: Instrument.isOKX(candle.symbol) ? false : nil)
             } else { remote[key] = candle }
             if complete { completedRemote.insert(key) }
             else { completedRemote.remove(key) }
@@ -191,7 +195,7 @@ public struct CandleBook {
     }
 
     public mutating func ingest(_ quote: PriceQuote, receivedAt: Date) {
-        guard quote.source == .stream, quote.price.isFinite, quote.price > 0,
+        guard quote.source == .stream, quote.recordsPriceSample, quote.price.isFinite, quote.price > 0,
               CandleValidation.symbol(quote.symbol), CandleValidation.date(quote.timestamp),
               CandleValidation.date(receivedAt) else { return }
         let key = Key(quote)
@@ -239,7 +243,8 @@ public struct CandleBook {
                 open: authoritative.open, high: high, low: low, close: close, volume: nil,
                 session: authoritative.session, origin: .mixed,
                 firstEvent: authoritative.firstEvent, lastEvent: last, observedAt: observed,
-                sampleCount: authoritative.sampleCount + samples.count)
+                sampleCount: authoritative.sampleCount + samples.count,
+                isFinal: Instrument.isOKX(key.symbol) ? false : nil)
         }.sorted { $0.minute == $1.minute ? $0.symbol < $1.symbol : $0.minute < $1.minute }
     }
 
@@ -260,7 +265,8 @@ public struct CandleBook {
                 // The cache projection cannot prove whether a Yahoo-looking
                 // row was assembled from partial observations. Wait for an
                 // actual completed source response before superseding samples.
-                completedRemote.remove(key)
+                if candle.origin == .okx && candle.isFinal == true { completedRemote.insert(key) }
+                else { completedRemote.remove(key) }
             }
         }
     }
@@ -281,7 +287,7 @@ public struct CandleBook {
             close: close, volume: nil, session: session, origin: .localSample,
             firstEvent: firstTime, lastEvent: lastTime,
             observedAt: max(events.map(\.receivedAt).max()!, saved?.observedAt ?? first.receivedAt),
-            sampleCount: samples.count)
+            sampleCount: samples.count, isFinal: Instrument.isOKX(key.symbol) ? false : nil)
     }
 
     private func eventOrder(_ left: Event, _ right: Event) -> Bool {
@@ -289,7 +295,8 @@ public struct CandleBook {
     }
 
     private func isCompleteSourceBar(_ candle: MinuteCandle) -> Bool {
-        candle.origin == .yahoo && candle.firstEvent == candle.minute
+        if candle.origin == .okx { return candle.isFinal == true }
+        return candle.origin == .yahoo && candle.firstEvent == candle.minute
             && candle.observedAt >= candle.minute.addingTimeInterval(60)
     }
 
@@ -316,7 +323,7 @@ private enum CandleValidation {
         Date(timeIntervalSince1970: floor(value.timeIntervalSince1970 / 60) * 60)
     }
     static func symbol(_ value: String) -> Bool {
-        value.range(of: "^[A-Z][A-Z0-9.-]{0,11}$", options: .regularExpression) != nil
+        Instrument.validSymbol(value)
     }
     static func ohlc(_ open: Double, _ high: Double, _ low: Double, _ close: Double) -> Bool {
         [open, high, low, close].allSatisfy { $0.isFinite && $0 > 0 }
@@ -331,7 +338,10 @@ private enum CandleValidation {
               value.sampleCount >= 0, value.sampleCount <= 10_000_000 else { return false }
         if let volume = value.volume, !volume.isFinite || volume < 0 { return false }
         switch value.origin {
-        case .yahoo: return value.sampleCount == 0
+        case .yahoo: return !Instrument.isOKX(value.symbol) && value.sampleCount == 0
+        case .okx:
+            return Instrument.isOKX(value.symbol) && value.session == .perpetual
+                && value.sampleCount == 0 && value.volume == nil && value.isFinal != nil
         case .localSample, .mixed: return value.sampleCount > 0 && value.volume == nil
         }
     }

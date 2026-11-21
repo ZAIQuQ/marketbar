@@ -38,6 +38,26 @@ func runArchiveChecks() async -> Bool {
         }
         let original = fixture()
         let next = fixture(offset: 60, origin: .localSample)
+        let perpetualTime = ISO8601DateFormatter().date(from: "2026-11-21T00:30:00Z")!
+        let perpetual = MinuteCandle(symbol: "SOXL-USDT-SWAP", minute: perpetualTime,
+            open: 33, high: 33.2, low: 32.8, close: 33.1, volume: nil, session: .perpetual,
+            origin: .okx, firstEvent: perpetualTime, lastEvent: perpetualTime,
+            observedAt: perpetualTime.addingTimeInterval(60), sampleCount: 0, isFinal: true)
+        let utcReference = ChartReference(day: "2026-11-21", previousClose: 32, basis: .utcOpen)
+        try await archive.save(symbol: perpetual.symbol, candles: [perpetual], references: [utcReference.day: utcReference])
+        let restoredPerpetual = try await archive.loadBundle(symbol: perpetual.symbol)
+        check(restoredPerpetual.candles == [perpetual], "OKX finality and session roundtrip")
+        check(restoredPerpetual.references[utcReference.day] == utcReference, "UTC opening basis survives archive reload")
+        check(FileManager.default.fileExists(atPath: temporary.appendingPathComponent("primary/SOXL-USDT-SWAP/2026-11-21.json").path),
+              "OKX archives use UTC date rather than previous New York day")
+        let missingFinality = MinuteCandle(symbol: perpetual.symbol, minute: perpetualTime,
+            open: 33, high: 34, low: 32, close: 33, volume: nil, session: .perpetual,
+            origin: .okx, firstEvent: perpetualTime, lastEvent: perpetualTime,
+            observedAt: perpetualTime.addingTimeInterval(60), sampleCount: 0)
+        do {
+            try await archive.save(symbol: perpetual.symbol, candles: [missingFinality])
+            check(false, "OKX cache without finality must not be silently dropped on restore")
+        } catch CandleArchiveError.invalidCandle { check(true, "OKX finality is required before persistence") }
         try await archive.save(symbol: "AMD", candles: [original, next])
         let restored = try await archive.load(symbol: "AMD")
         check(restored == [original, next], "roundtrip preserves OHLC, volume, provenance and event timestamps exactly")

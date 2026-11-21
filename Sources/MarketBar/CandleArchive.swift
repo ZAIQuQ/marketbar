@@ -30,6 +30,7 @@ actor CandleArchive {
         let day: String
         let candles: [MinuteCandle]
         let previousClose: Double?
+        let referenceBasis: ReferenceBasis?
     }
 
     private let directory: URL
@@ -77,7 +78,8 @@ actor CandleArchive {
             let document = try read(file, symbol: symbol, day: day)
             result += document.candles
             if let previousClose = document.previousClose {
-                references[day] = ChartReference(day: day, previousClose: previousClose)
+                references[day] = ChartReference(day: day, previousClose: previousClose,
+                                                 basis: document.referenceBasis ?? .previousClose)
             }
         }
         return (result.sorted { $0.minute < $1.minute }, references)
@@ -94,16 +96,18 @@ actor CandleArchive {
         var grouped: [String: [MinuteCandle]] = [:]
         for candle in candles {
             try validate(candle, symbol: symbol)
-            grouped[dayFormatter.string(from: candle.minute), default: []].append(candle)
+            grouped[Instrument.day(symbol, at: candle.minute), default: []].append(candle)
         }
         var prepared: [(URL, Data)] = []
         for day in grouped.keys.sorted() {
             let file = folder.appendingPathComponent(day + ".json", isDirectory: false)
             var merged: [Date: MinuteCandle] = [:]
             var previousClose: Double?
+            var referenceBasis: ReferenceBasis?
             if manager.fileExists(atPath: file.path) {
                 let existing = try read(file, symbol: symbol, day: day)
                 previousClose = existing.previousClose
+                referenceBasis = existing.referenceBasis
                 for candle in existing.candles {
                     merged[candle.minute] = candle
                 }
@@ -113,6 +117,7 @@ actor CandleArchive {
                     throw CandleArchiveError.invalidCandle("昨收基准与 K 线日期不匹配，或价格无效。")
                 }
                 previousClose = reference.previousClose
+                referenceBasis = reference.basis
             }
             for candle in grouped[day]! {
                 if let prior = merged[candle.minute], prior.observedAt > candle.observedAt { continue }
@@ -122,7 +127,8 @@ actor CandleArchive {
                 throw CandleArchiveError.invalidCandle("同一纽约日期的分钟数量超出范围。")
             }
             let document = DayFile(schemaVersion: 1, symbol: symbol, day: day,
-                candles: merged.values.sorted { $0.minute < $1.minute }, previousClose: previousClose)
+                candles: merged.values.sorted { $0.minute < $1.minute }, previousClose: previousClose,
+                referenceBasis: referenceBasis)
             do { prepared.append((file, try encoder.encode(document))) }
             catch { throw CandleArchiveError.invalidCandle("\(symbol) 的数值无法编码。") }
         }
@@ -173,7 +179,7 @@ actor CandleArchive {
             var seen = Set<Date>()
             for candle in document.candles {
                 try validate(candle, symbol: symbol)
-                guard dayFormatter.string(from: candle.minute) == day,
+                guard Instrument.day(symbol, at: candle.minute) == day,
                       seen.insert(candle.minute).inserted else {
                     throw CandleArchiveError.invalidFile(file.lastPathComponent)
                 }
@@ -211,6 +217,11 @@ actor CandleArchive {
         case .yahoo:
             guard candle.sampleCount == 0 else {
                 throw CandleArchiveError.invalidCandle("远端 K 线不能包含本地样本计数。")
+            }
+        case .okx:
+            guard Instrument.isOKX(candle.symbol), candle.session == .perpetual,
+                  candle.isFinal != nil, candle.volume == nil, candle.sampleCount == 0 else {
+                throw CandleArchiveError.invalidCandle("OKX K 线的合约、时段或完成状态无效。")
             }
         case .localSample, .mixed:
             guard candle.sampleCount > 0, candle.volume == nil else {

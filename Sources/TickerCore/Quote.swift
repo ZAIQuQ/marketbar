@@ -1,7 +1,7 @@
 import Foundation
 
 public enum TradingSession: String, Codable, CaseIterable {
-    case pre, regular, post, closed, unknown
+    case pre, regular, post, closed, unknown, perpetual
 
     public var label: String {
         switch self {
@@ -10,6 +10,7 @@ public enum TradingSession: String, Codable, CaseIterable {
         case .post: return "盘后"
         case .closed: return "休市时段"
         case .unknown: return "时段未知"
+        case .perpetual: return "永续"
         }
     }
 
@@ -36,7 +37,7 @@ public enum QuoteSource: String, Codable {
     public var label: String {
         switch self {
         case .stream: return "推送"
-        case .snapshot: return "分钟快照"
+        case .snapshot: return "快照"
         }
     }
 }
@@ -48,15 +49,19 @@ public struct PriceQuote: Equatable {
     public let session: TradingSession
     public let source: QuoteSource
     public let changePercent: Double?
+    /// False when the timestamp describes ticker-message generation rather
+    /// than a trade execution (for example OKX's bid/ask-triggered ticker).
+    public let recordsPriceSample: Bool
 
     public init(symbol: String, price: Double, timestamp: Date, session: TradingSession,
-                source: QuoteSource, changePercent: Double? = nil) {
+                source: QuoteSource, changePercent: Double? = nil, recordsPriceSample: Bool = true) {
         self.symbol = symbol
         self.price = price
         self.timestamp = timestamp
         self.session = session
         self.source = source
         self.changePercent = changePercent
+        self.recordsPriceSample = recordsPriceSample
     }
 }
 
@@ -81,13 +86,13 @@ public enum Watchlist {
         guard !parts.isEmpty else { throw QuoteError.invalidWatchlist("请至少输入一只股票代码。") }
         var symbols: [String] = []
         for raw in parts {
-            let symbol = raw == "NVIDIA" ? "NVDA" : raw
-            guard symbol.range(of: "^[A-Z][A-Z0-9.-]{0,11}$", options: .regularExpression) != nil else {
-                throw QuoteError.invalidWatchlist("无效股票代码：\(raw)。请使用 AMD、NVDA 等美股代码。")
+            let symbol = raw == "NVIDIA" ? "NVDA" : raw == "SOXLUSDT" ? "SOXL-USDT-SWAP" : raw
+            guard Instrument.validSymbol(symbol) else {
+                throw QuoteError.invalidWatchlist("无效代码：\(raw)。请使用 AMD、NVDA 或 SOXL-USDT-SWAP 等明确代码。")
             }
             if !symbols.contains(symbol) { symbols.append(symbol) }
         }
-        guard symbols.count <= 12 else { throw QuoteError.invalidWatchlist("最多关注 12 只股票。") }
+        guard symbols.count <= 12 else { throw QuoteError.invalidWatchlist("最多关注 12 个品种。") }
         return symbols
     }
 }

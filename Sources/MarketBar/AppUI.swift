@@ -79,14 +79,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let configured = UserDefaults.standard.integer(forKey: "menuSymbolCount")
         let count = configured == 0 ? 2 : min(3, max(1, configured))
         let parts = store.symbols.prefix(count).map { symbol -> String in
-            guard let quote = store.quotes[symbol] else { return "\(symbol) —" }
+            let name = Instrument.displaySymbol(symbol)
+            let connection = store.isConnected(symbol: symbol) ? "" : "◌ "
+            guard let quote = store.quotes[symbol] else { return "\(connection)\(name) —" }
             let old = Date().timeIntervalSince(quote.timestamp) > 60
             let marker = old ? "·旧" : quote.source == .snapshot ? "≈" : shortSession(quote.session)
-            return "\(symbol) \(quote.price.formatted(.number.precision(.fractionLength(2))))\(marker)"
+            return "\(connection)\(name) \(quote.price.formatted(.number.precision(.fractionLength(2))))\(marker)"
         }
         statusItem.button?.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
-        statusItem.button?.title = (store.connected ? "" : "◌ ") + parts.joined(separator: "  ")
-        statusItem.button?.toolTip = "MarketBar · \(store.connectionText)\n前 / 中 / 后：报价时段 · ≈：分钟快照 · 旧：超过 60 秒未更新"
+        statusItem.button?.title = parts.joined(separator: "  ")
+        statusItem.button?.toolTip = "MarketBar · \(store.connectionText)\n前 / 中 / 后：报价时段 · 永：OKX 永续 · ≈：快照 · 旧：超过 60 秒未更新"
     }
 }
 
@@ -95,6 +97,7 @@ private func shortSession(_ session: TradingSession) -> String {
     case .pre: return "前"
     case .regular: return "中"
     case .post: return "后"
+    case .perpetual: return "永"
     case .closed: return "闭"
     case .unknown: return "?"
     }
@@ -110,15 +113,11 @@ struct TickerPanel: View {
     @State private var inputError: String?
     @State private var selectedSymbol: String?
     private let names = ["AMD": "超威半导体", "NVDA": "英伟达", "AAPL": "苹果", "MSFT": "微软", "TSLA": "特斯拉", "AMZN": "亚马逊", "GOOGL": "Alphabet", "META": "Meta"]
-    private static let newYork = TimeZone(identifier: "America/New_York")!
-    private static let dayFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.calendar = Calendar(identifier: .gregorian)
-        formatter.timeZone = newYork
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter
-    }()
+    private var hasOKX: Bool { store.symbols.contains { Instrument.isOKX($0) } }
+    private var hasStocks: Bool { store.symbols.contains { !Instrument.isOKX($0) } }
+    private var sourcesLabel: String {
+        hasOKX ? (hasStocks ? "Yahoo Finance · OKX" : "OKX") : "Yahoo Finance"
+    }
 
     var body: some View {
         Group {
@@ -147,7 +146,8 @@ struct TickerPanel: View {
                 MarketBrandMark()
                 VStack(alignment: .leading, spacing: 2) {
                     Text("MarketBar").font(.system(size: 18, weight: .semibold))
-                    Text("美股自选").font(.system(size: 11)).foregroundStyle(.secondary)
+                    Text(hasOKX ? (hasStocks ? "美股与永续" : "OKX 永续") : "美股自选")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
                 }
                 Spacer()
                 Button {
@@ -199,8 +199,8 @@ struct TickerPanel: View {
 
             Rectangle().fill(MarketTheme.separator).frame(height: 1).padding(.horizontal, 22)
             HStack(spacing: 6) {
-                Text("Yahoo Finance").font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary)
-                    .help("免费行情；推送与分钟快照按来源标注。")
+                Text(sourcesLabel).font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary)
+                    .help("公开行情；推送和快照按来源标注。OKX 价格单位为 USDT。")
                 Spacer()
                 Button { store.reconnect() } label: { Image(systemName: "arrow.clockwise") }
                     .buttonStyle(MarketIconButtonStyle())
@@ -217,11 +217,11 @@ struct TickerPanel: View {
     private var settings: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("股票代码").font(.system(size: 11, weight: .medium))
+                Text("自选代码").font(.system(size: 11, weight: .medium))
                 Spacer()
                 Text("最多 12 只").font(.system(size: 10)).foregroundStyle(.secondary)
             }
-            TextField("AMD, NVDA, AAPL", text: $draft)
+            TextField("AMD, NVDA, SOXLUSDT", text: $draft)
                 .font(.system(size: 12, design: .monospaced))
                 .textFieldStyle(.roundedBorder).onSubmit(saveWatchlist)
                 .accessibilityLabel("自选股代码，逗号或空格分隔")
@@ -241,7 +241,7 @@ struct TickerPanel: View {
                 Button("完成", action: saveWatchlist)
                     .buttonStyle(.borderedProminent).controlSize(.small).keyboardShortcut(.return)
             }
-            Text("逗号或空格分隔，按填写顺序显示。")
+            Text("逗号或空格分隔；SOXLUSDT 对应 SOXL-USDT-SWAP 永续。")
                 .font(.system(size: 10)).foregroundStyle(.secondary)
         }
         .padding(12)
@@ -251,13 +251,15 @@ struct TickerPanel: View {
     @ViewBuilder
     private func quoteRow(_ symbol: String, now: Date) -> some View {
         let quote = store.quotes[symbol]
-        let change = quote.flatMap { dailyChange($0) }
+        let perpetual = Instrument.isOKX(symbol)
+        let change = quote.flatMap { perpetual ? $0.changePercent : dailyChange($0) }
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
                 VStack(alignment: .leading, spacing: 5) {
-                    Text(symbol).font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(.primary)
-                    Text(names[symbol] ?? "美股").font(.system(size: 10)).foregroundStyle(.secondary)
+                    Text(Instrument.displaySymbol(symbol)).font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.primary).help(symbol)
+                    Text(perpetual ? "OKX 永续 · USDT" : names[symbol] ?? "美股")
+                        .font(.system(size: 10)).foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
                 .frame(width: 94, alignment: .leading)
@@ -269,23 +271,28 @@ struct TickerPanel: View {
                 VStack(alignment: .trailing, spacing: 5) {
                     if let quote {
                         HStack(alignment: .firstTextBaseline, spacing: 2) {
-                            Text("$").font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)
+                            if !perpetual {
+                                Text("$").font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)
+                            }
                             Text(quote.price.formatted(.number.precision(.fractionLength(2))))
                                 .font(.system(size: 23, weight: .medium, design: .monospaced))
                                 .foregroundStyle(.primary)
+                            if perpetual {
+                                Text("USDT").font(.system(size: 9, weight: .medium)).foregroundStyle(.secondary)
+                            }
                         }
                     } else {
                         Text("—").font(.system(size: 23, weight: .medium, design: .monospaced))
                             .foregroundStyle(.tertiary)
                     }
                     if let change {
-                        Text(String(format: "%+.2f%%", abs(change) < 0.005 ? 0 : change))
+                        Text((perpetual ? "24h " : "") + String(format: "%+.2f%%", abs(change) < 0.005 ? 0 : change))
                             .font(.system(size: 11, weight: .semibold, design: .monospaced))
                             .foregroundStyle(MarketTheme.changeColor(change))
-                            .help("较上一交易日收盘")
+                            .help(perpetual ? "过去 24 小时涨跌幅" : "较上一交易日收盘")
                     } else {
                         Text("—").font(.system(size: 11, design: .monospaced)).foregroundStyle(.tertiary)
-                            .help("暂无对应交易日的昨收价")
+                            .help(perpetual ? "暂无 24 小时基准价" : "暂无对应交易日的昨收价")
                     }
                 }
             }
@@ -296,10 +303,12 @@ struct TickerPanel: View {
                         .font(.system(size: 9, weight: .medium)).foregroundStyle(MarketTheme.accent)
                         .padding(.horizontal, 6).padding(.vertical, 3)
                         .background(MarketTheme.accent.opacity(0.075), in: RoundedRectangle(cornerRadius: 4))
-                    Text(quote.source == .stream ? "推送" : "快照")
+                    Circle().fill(store.isConnected(symbol: symbol) ? MarketTheme.accent : .orange)
+                        .frame(width: 4, height: 4).help(store.connectionLabel(symbol: symbol))
+                    Text(perpetual ? "行情更新" : quote.source == .stream ? "推送" : "快照")
                     Text("·").foregroundStyle(.tertiary)
-                    Text(clockString(quote.timestamp)).monospacedDigit()
-                    Text("美东")
+                    Text(clockString(quote.timestamp, zone: Instrument.timeZone(symbol))).monospacedDigit()
+                    Text(perpetual ? "UTC" : "美东")
                     Spacer()
                     if let error = store.symbolErrors[symbol] {
                         Image(systemName: "exclamationmark.triangle")
@@ -360,7 +369,7 @@ struct TickerPanel: View {
             TimelineView(.periodic(from: .now, by: 1)) { context in
                 if let quote = store.quotes[symbol] {
                     let age = max(0, (previewDate ?? context.date).timeIntervalSince(quote.timestamp))
-                    Text("\(quote.source == .snapshot ? "快照" : "报价") \(ageText(age))前")
+                    Text("\(Instrument.isOKX(symbol) ? "行情更新" : quote.source == .snapshot ? "快照" : "报价") \(ageText(age))前")
                         .font(.system(size: 10)).monospacedDigit()
                         .foregroundStyle(age > 60 ? Color.orange : Color.secondary)
                         .help(quoteHelp(quote))
@@ -368,33 +377,52 @@ struct TickerPanel: View {
                     Text("等待报价…").font(.system(size: 10)).foregroundStyle(.secondary)
                 }
             }
-            connectionBadge
+            sourceConnectionBadge(symbol)
         }
         .frame(height: 24)
     }
 
+    @ViewBuilder
+    private func sourceConnectionBadge(_ symbol: String) -> some View {
+        if previewDate != nil {
+            Text("界面预览").font(.system(size: 9, weight: .medium)).foregroundStyle(.secondary)
+        } else {
+            HStack(spacing: 5) {
+                Circle().fill(store.isConnected(symbol: symbol) ? MarketTheme.accent : .orange)
+                    .frame(width: 5, height: 5)
+                Text(store.connectionLabel(symbol: symbol)).font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(.secondary).lineLimit(1)
+            }.help(store.connectionLabel(symbol: symbol))
+        }
+    }
+
     private func dailyChange(_ quote: PriceQuote) -> Double? {
-        let day = Self.dayFormatter.string(from: quote.timestamp)
-        guard let reference = store.chartReferences[quote.symbol]?[day], reference.day == day else { return nil }
+        let day = Instrument.day(quote.symbol, at: quote.timestamp)
+        guard let reference = store.chartReferences[quote.symbol]?[day], reference.day == day,
+              reference.basis == .previousClose else { return nil }
         return reference.percentChange(at: quote.price)
     }
 
     private func sparklineCandles(_ symbol: String, quote: PriceQuote?) -> [MinuteCandle] {
         guard let quote else { return [] }
-        let day = Self.dayFormatter.string(from: quote.timestamp)
+        let day = Instrument.day(symbol, at: quote.timestamp)
         let lowerBound = quote.timestamp.addingTimeInterval(-90 * 60)
         return (store.candles[symbol] ?? []).filter {
             $0.session == quote.session && $0.minute <= quote.timestamp && $0.minute >= lowerBound
-                && Self.dayFormatter.string(from: $0.minute) == day
+                && Instrument.day(symbol, at: $0.minute) == day
         }.sorted { $0.minute < $1.minute }
     }
 
     private func quoteHelp(_ quote: PriceQuote) -> String {
+        let perpetual = Instrument.isOKX(quote.symbol)
+        let source = perpetual ? (quote.source == .stream ? "OKX 推送" : "OKX 行情快照") : quote.source.label
         var lines = [
-            "\(quote.symbol) · \(quote.session.label) · \(quote.source.label)",
-            "美东 \(timeString(quote.timestamp, zone: Self.newYork))",
-            "本地 \(timeString(quote.timestamp, zone: .current))"
+            "\(quote.symbol) · \(quote.session.label) · \(source)",
+            "\(perpetual ? "UTC 行情更新" : "美东") \(timeString(quote.timestamp, zone: Instrument.timeZone(quote.symbol)))",
+            "本地 \(timeString(quote.timestamp, zone: .current))",
+            store.connectionLabel(symbol: quote.symbol)
         ]
+        if perpetual { lines.append("价格为 USDT；24h 为滚动涨跌幅。更新时间是行情消息生成时间。") }
         if quote.source == .stream, let lag = store.deliveryLag[quote.symbol] {
             lines.append(lag < -1 ? "报价时间与本机时钟存在偏差" : "报价到达时相差 \(String(format: "%.1f", max(0, lag))) 秒")
         }
@@ -461,10 +489,10 @@ private struct QuoteSparkline: View {
     }
 }
 
-private func clockString(_ date: Date) -> String {
+private func clockString(_ date: Date, zone: TimeZone) -> String {
     let formatter = DateFormatter()
     formatter.locale = Locale(identifier: "en_US_POSIX")
-    formatter.timeZone = TimeZone(identifier: "America/New_York")
+    formatter.timeZone = zone
     formatter.dateFormat = "HH:mm:ss"
     return formatter.string(from: date)
 }

@@ -1,6 +1,6 @@
 # MarketBar
 
-在 Mac 菜单栏看美股价格，点开就能查看盘前、盘中和盘后的分钟走势。
+在 Mac 菜单栏看美股和 OKX 永续行情，点开查看分钟走势。
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/marketbar-dark.png">
@@ -13,6 +13,7 @@
 - 分时线与 1 分钟 K 线，按纽约日期和交易时段查看；十字线显示价格及相对昨收的涨跌幅。
 - 自动保存分钟数据和昨收基准，离线可查看缓存；图中保留缺失分钟的空白。
 - 原生 Swift、AppKit、SwiftUI，无第三方运行时或 Swift 包依赖，无需账号。
+- 输入 `SOXLUSDT` 可监控 OKX 的 `SOXL-USDT-SWAP` 永续合约，支持其他完整的 `*-USDT-SWAP` 代码。
 
 ## 安装
 
@@ -32,20 +33,23 @@ bash scripts/install.sh
 
 点击菜单栏价格打开面板，在右上角设置自选股。列表顺序就是菜单栏顺序。点击股票卡片进入图表，鼠标悬停可查看该分钟的价格和涨跌幅。
 
+例如 `AMD, NVDA, SOXLUSDT`。`SOXL` 是美股 ETF；`SOXLUSDT` 是 OKX USDT 永续，二者分开显示。合约列表的涨跌幅为滚动 **24h**；合约图表使用 **UTC** 日期，十字线涨跌幅相对该 UTC 日开盘价。图表可切换近两小时和全天。
+
 | 标记 | 含义 |
 | --- | --- |
 | 前 / 中 / 后 | 这笔报价所属的盘前 / 盘中 / 盘后时段 |
 | ≈ | 分钟快照 |
 | 旧 | 报价时间距当前超过 60 秒 |
 | ◌ | 推送未连接 |
+| 永 | OKX USDT 永续合约 |
 
 若需登录时启动，将应用添加到 macOS「系统设置 → 通用 → 登录项」。
 
 ## 行情与缓存
 
-行情来自 Yahoo Finance 推送和分钟接口。接口为非官方接入，没有延迟或可用性保证，可能限流或变更。图表区分线上分钟数据、本机采样和混合数据；本机样本不代表完整分钟成交，也不推算成交量。详细说明见[数据说明](docs/DATA_SOURCES.md)。
+美股行情通过 Yahoo Finance 非官方接口获取，没有延迟或可用性保证。OKX 合约使用官方公开 WebSocket 和 REST 行情，无需 API Key；应用不连接账户或下单。图表区分线上分钟数据、本机采样和混合数据；本机样本不代表完整分钟成交。详细说明见[数据说明](docs/DATA_SOURCES.md)。
 
-缓存位于 `~/Library/Application Support/MarketBar/Candles/`，按股票和纽约日期保存。启动时加载最近 10 个已保存日期，旧文件仍保留。缺少对应日期的昨收基准时，涨跌幅显示「—」。
+缓存位于 `~/Library/Application Support/MarketBar/Candles/`，按品种和日期保存：美股使用纽约日期，OKX 合约使用 UTC 日期。启动时加载最近 10 个已保存日期，旧文件仍保留。缺少对应日期的涨跌基准时显示「—」。
 
 ## 开发
 
@@ -54,6 +58,8 @@ bash scripts/check.sh
 ```
 
 用 `swift run MarketBar --diagnose` 观察 20 秒网络行情并输出 JSON。该命令不写入行情缓存；没有收到推送时退出码为 2，休市或断网都可能导致这一结果。
+
+指定品种：`swift run MarketBar --diagnose --symbols 'AMD,SOXLUSDT'`。
 
 `Sources/TickerCore` 负责行情解析和分钟数据合并，`Sources/MarketBar` 负责界面、网络连接及本地保存。问题反馈请附 macOS 版本、股票代码和出现问题的时间。
 

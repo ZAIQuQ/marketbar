@@ -20,6 +20,7 @@ struct IntradayChartView: View {
         self.references = references
         self.onRefresh = onRefresh
         self._hoveredMinute = State(initialValue: initialHover)
+        self._selectedSession = State(initialValue: Instrument.isOKX(symbol) ? .perpetual : .pre)
     }
 
     @State private var mode: ChartMode = .candles
@@ -28,41 +29,40 @@ struct IntradayChartView: View {
     @State private var hoveredMinute: Date?
     @State private var hoveringGap = false
     @State private var showingDataInfo = false
+    @State private var showFullDay = false
 
     private enum ChartMode: String, CaseIterable {
         case line = "分时"
         case candles = "1 分 K"
     }
 
-    private static let newYork = TimeZone(identifier: "America/New_York")!
-    private static let dayFormatter: DateFormatter = {
+    private var perpetual: Bool { Instrument.isOKX(symbol) }
+    private var timeZoneLabel: String { perpetual ? "UTC" : "美东" }
+    private var sourceLabel: String { perpetual ? "OKX" : "Yahoo Finance" }
+    private static let newYorkClock = makeClockFormatter(TimeZone(identifier: "America/New_York")!)
+    private static let utcClock = makeClockFormatter(TimeZone(secondsFromGMT: 0)!)
+    private var clockFormatter: DateFormatter { perpetual ? Self.utcClock : Self.newYorkClock }
+
+    private static func makeClockFormatter(_ zone: TimeZone) -> DateFormatter {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.calendar = Calendar(identifier: .gregorian)
-        formatter.timeZone = newYork
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter
-    }()
-    private static let clockFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = newYork
+        formatter.timeZone = zone
         formatter.dateFormat = "HH:mm"
         return formatter
-    }()
+    }
 
     private var symbolCandles: [MinuteCandle] {
         candles.filter { $0.symbol == symbol }.sorted { $0.minute < $1.minute }
     }
 
     private var dayKeys: [String] {
-        Array(Set(symbolCandles.map { Self.dayFormatter.string(from: $0.minute) })).sorted(by: >)
+        Array(Set(symbolCandles.map { Instrument.day(symbol, at: $0.minute) })).sorted(by: >)
     }
 
     private var effectiveDay: String {
         if dayKeys.contains(selectedDay) { return selectedDay }
-        if let premarket = symbolCandles.last(where: { $0.session == .pre }) {
-            return Self.dayFormatter.string(from: premarket.minute)
+        if let latest = symbolCandles.last(where: { $0.session == (perpetual ? .perpetual : .pre) }) {
+            return Instrument.day(symbol, at: latest.minute)
         }
         return dayKeys.first ?? ""
     }
@@ -70,7 +70,7 @@ struct IntradayChartView: View {
     private var sessionCandles: [MinuteCandle] {
         let day = effectiveDay
         return symbolCandles.filter {
-            $0.session == selectedSession && Self.dayFormatter.string(from: $0.minute) == day
+            $0.session == selectedSession && Instrument.day(symbol, at: $0.minute) == day
                 && $0.open.isFinite && $0.high.isFinite && $0.low.isFinite && $0.close.isFinite
                 && [$0.open, $0.high, $0.low, $0.close].allSatisfy { $0 > 0 }
         }
@@ -85,8 +85,9 @@ struct IntradayChartView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 8) {
-                Text(symbol).font(.system(size: 22, weight: .semibold, design: .rounded))
-                Text("USD").font(.system(size: 10, weight: .medium)).foregroundStyle(.tertiary)
+                Text(Instrument.displaySymbol(symbol)).font(.system(size: 22, weight: .semibold, design: .rounded))
+                    .help(perpetual ? "\(symbol) · OKX 永续" : symbol)
+                Text(Instrument.currency(symbol)).font(.system(size: 10, weight: .medium)).foregroundStyle(.tertiary)
                 Spacer()
                 if loading { ProgressView().controlSize(.small) }
                 Button(action: onRefresh) { Image(systemName: "arrow.clockwise") }
@@ -105,13 +106,20 @@ struct IntradayChartView: View {
                     }
                 }
                 .padding(3).background(MarketTheme.subtleSurface, in: RoundedRectangle(cornerRadius: 9))
-                HStack(spacing: 2) {
-                    ForEach([TradingSession.pre, .regular, .post], id: \.self) { item in
-                        segment(item.label, selected: selectedSession == item) { selectedSession = item }
-                    }
-                }.padding(3).background(MarketTheme.subtleSurface, in: RoundedRectangle(cornerRadius: 9))
+                if perpetual {
+                    HStack(spacing: 2) {
+                        segment("近 2 小时", selected: !showFullDay) { showFullDay = false; clearHover() }
+                        segment("全天", selected: showFullDay) { showFullDay = true; clearHover() }
+                    }.padding(3).background(MarketTheme.subtleSurface, in: RoundedRectangle(cornerRadius: 9))
+                } else {
+                    HStack(spacing: 2) {
+                        ForEach([TradingSession.pre, .regular, .post], id: \.self) { item in
+                            segment(item.label, selected: selectedSession == item) { selectedSession = item }
+                        }
+                    }.padding(3).background(MarketTheme.subtleSurface, in: RoundedRectangle(cornerRadius: 9))
+                }
                 Spacer(minLength: 0)
-                Picker("美东日期", selection: Binding(
+                Picker("\(timeZoneLabel)日期", selection: Binding(
                     get: { effectiveDay }, set: { selectedDay = $0 }
                 )) {
                     if dayKeys.isEmpty { Text("暂无日期").tag("") }
@@ -120,13 +128,14 @@ struct IntradayChartView: View {
                 .labelsHidden()
                 .frame(width: 136)
                 .disabled(dayKeys.isEmpty)
-                .help("美东日期")
+                .help("\(timeZoneLabel)日期")
             }
 
             GeometryReader { geometry in
                 let visible = sessionCandles
                 let layout = PlotLayout(size: geometry.size, day: effectiveDay, session: selectedSession,
-                                        candles: visible)
+                                        symbol: symbol, candles: visible, fullDay: !perpetual || showFullDay)
+                let plotted = visible.filter { $0.minute >= layout.start && $0.minute < layout.end }
                 ZStack {
                     Canvas { context, size in
                         drawGrid(context: &context, layout: layout, hasData: !visible.isEmpty)
@@ -149,7 +158,7 @@ struct IntradayChartView: View {
                                 return
                             }
                             let target = layout.time(at: point.x)
-                            let nearest = visible.min {
+                            let nearest = plotted.min {
                                 abs($0.minute.addingTimeInterval(30).timeIntervalSince(target))
                                     < abs($1.minute.addingTimeInterval(30).timeIntervalSince(target))
                             }
@@ -183,25 +192,30 @@ struct IntradayChartView: View {
                     }
                 }
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel("\(symbol)，\(effectiveDay) 美东时间，\(selectedSession.label)，\(visible.count) 个有数据的分钟。缺失分钟留空。")
+                .accessibilityLabel("\(Instrument.displaySymbol(symbol))，\(effectiveDay) \(timeZoneLabel)时间，\(selectedSession.label)，\(visible.count) 个有数据的分钟。缺失分钟留空。")
             }
             .frame(height: error?.isEmpty == false ? 208 : 248)
 
             HStack(spacing: 12) {
-                Text("Yahoo Finance").font(.system(size: 10)).foregroundStyle(.secondary)
-                if sessionCandles.contains(where: { $0.origin != .yahoo }) {
+                Text(sourceLabel).font(.system(size: 10)).foregroundStyle(.secondary)
+                if sessionCandles.contains(where: { $0.origin != .yahoo && $0.origin != .okx }) {
                     legendItem("含本机采样", color: .orange, outlined: true)
                 }
                 Spacer(minLength: 0)
-                Text("美东时间").font(.system(size: 10)).foregroundStyle(.secondary)
+                Text("\(timeZoneLabel)时间").font(.system(size: 10)).foregroundStyle(.secondary)
                 Button { showingDataInfo.toggle() } label: { Image(systemName: "info.circle") }
                     .buttonStyle(.plain).foregroundStyle(.secondary)
                     .help("数据说明")
                     .popover(isPresented: $showingDataInfo) {
                         VStack(alignment: .leading, spacing: 10) {
                             Text("数据说明").font(.headline)
-                            Text("分钟数据来自 Yahoo Finance。橙色标记含本机收到的报价样本，可能不完整。缺失分钟留空。")
-                            Text("涨跌幅相对所选交易日的昨收价。当前分钟仍会更新。")
+                            Text("分钟数据来自 \(sourceLabel)。橙色标记含本机收到的报价样本，可能不完整。缺失分钟留空。")
+                            Text(perpetual
+                                 ? "图中涨跌幅相对所选 UTC 日期的开盘价；自选列表显示滚动 24h 涨跌幅。价格单位为 USDT。"
+                                 : "涨跌幅相对所选交易日的昨收价。")
+                            Text(perpetual
+                                 ? "行情更新时间是 OKX 消息生成时间，盘口变化也可能触发更新。当前分钟仍会变化。"
+                                 : "当前分钟仍会更新。")
                         }.font(.system(size: 12)).padding(18).frame(width: 290)
                     }
             }
@@ -212,8 +226,9 @@ struct IntradayChartView: View {
         }
         .padding(14)
         .onChange(of: symbol) { _ in
+            showFullDay = false
             selectedDay = ""
-            selectedSession = .pre
+            selectedSession = perpetual ? .perpetual : .pre
             clearHover()
         }
         .onChange(of: selectedDay) { _ in clearHover() }
@@ -230,14 +245,14 @@ struct IntradayChartView: View {
         } else if let candle = detailCandle {
             VStack(alignment: .leading, spacing: 7) {
                 HStack(alignment: .firstTextBaseline, spacing: 12) {
-                    Text("$\(Self.price(candle.close))")
+                    Text(priceLabel(candle.close))
                         .font(.system(size: 32, weight: .semibold, design: .rounded)).monospacedDigit()
                     Text(changeLabel(candle)).font(.system(size: 13, weight: .semibold)).monospacedDigit()
                         .foregroundStyle(changeColor(candle))
                         .padding(.horizontal, 8).padding(.vertical, 5)
                         .background(changeColor(candle).opacity(0.08), in: RoundedRectangle(cornerRadius: 7))
                 }
-                Text("\(Self.clockFormatter.string(from: candle.minute)) · \(selectedSession.label) · \(referenceLabel(candle))")
+                Text("\(clockFormatter.string(from: candle.minute)) · \(selectedSession.label) · \(referenceLabel(candle))")
                     .font(.system(size: 11)).foregroundStyle(.secondary).monospacedDigit()
             }
         } else {
@@ -255,8 +270,9 @@ struct IntradayChartView: View {
     }
 
     private func reference(_ candle: MinuteCandle) -> ChartReference? {
-        let day = Self.dayFormatter.string(from: candle.minute)
-        guard let value = references[day], value.day == day else { return nil }
+        let day = Instrument.day(symbol, at: candle.minute)
+        guard let value = references[day], value.day == day,
+              value.basis == (perpetual ? .utcOpen : .previousClose) else { return nil }
         return value
     }
 
@@ -271,8 +287,11 @@ struct IntradayChartView: View {
     }
 
     private func referenceLabel(_ candle: MinuteCandle) -> String {
-        guard let value = reference(candle) else { return "昨收基准暂无" }
-        return "较昨收 $\(Self.price(value.previousClose))"
+        guard let value = reference(candle) else { return perpetual ? "UTC 开盘基准暂无" : "昨收基准暂无" }
+        switch value.basis {
+        case .utcOpen: return "较UTC开盘 \(Self.price(value.previousClose)) USDT"
+        case .previousClose: return "较昨收 $\(Self.price(value.previousClose))"
+        }
     }
 
     private func legendItem(_ title: String, color: Color, outlined: Bool) -> some View {
@@ -291,6 +310,10 @@ struct IntradayChartView: View {
         hoveringGap = false
     }
 
+    private func priceLabel(_ value: Double) -> String {
+        perpetual ? Self.price(value) : "$\(Self.price(value))"
+    }
+
     private static func price(_ value: Double) -> String {
         String(format: value < 1 ? "%.4f" : "%.2f", value)
     }
@@ -302,23 +325,42 @@ struct IntradayChartView: View {
         let low: Double
         let high: Double
 
-        init(size: CGSize, day: String, session: TradingSession, candles: [MinuteCandle]) {
+        init(size: CGSize, day: String, session: TradingSession, symbol: String, candles: [MinuteCandle], fullDay: Bool) {
             plot = CGRect(x: 58, y: 12, width: max(1, size.width - 72), height: max(1, size.height - 42))
             var calendar = Calendar(identifier: .gregorian)
-            calendar.timeZone = IntradayChartView.newYork
-            let date = IntradayChartView.dayFormatter.date(from: day)
-                ?? calendar.startOfDay(for: Date())
+            calendar.timeZone = Instrument.timeZone(symbol)
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.calendar = calendar
+            formatter.timeZone = calendar.timeZone
+            formatter.dateFormat = "yyyy-MM-dd"
+            let date = formatter.date(from: day) ?? calendar.startOfDay(for: Date())
             let minutes: (Int, Int)
             switch session {
             case .pre: minutes = (240, 570)
             case .regular: minutes = (570, 960)
             case .post: minutes = (960, 1200)
+            case .perpetual: minutes = (0, 1440)
             default: minutes = (240, 1200)
             }
-            start = calendar.date(bySettingHour: minutes.0 / 60, minute: minutes.0 % 60, second: 0, of: date)!
-            end = calendar.date(bySettingHour: minutes.1 / 60, minute: minutes.1 % 60, second: 0, of: date)!
-            let minimum = candles.map(\.low).min() ?? 0
-            let maximum = candles.map(\.high).max() ?? 1
+            let scheduledStart = calendar.date(bySettingHour: minutes.0 / 60, minute: minutes.0 % 60, second: 0, of: date)!
+            var rangeStart = scheduledStart
+            var rangeEnd: Date
+            if minutes.1 == 1440 {
+                rangeEnd = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: date))!
+            } else {
+                rangeEnd = calendar.date(bySettingHour: minutes.1 / 60, minute: minutes.1 % 60, second: 0, of: date)!
+            }
+            if session == .perpetual, !fullDay, let latest = candles.last {
+                let roundedEnd = Date(timeIntervalSince1970: ceil(latest.minute.addingTimeInterval(60).timeIntervalSince1970 / 3600) * 3600)
+                rangeEnd = min(rangeEnd, max(scheduledStart.addingTimeInterval(3600), roundedEnd))
+                rangeStart = max(scheduledStart, rangeEnd.addingTimeInterval(-7200))
+            }
+            start = rangeStart
+            end = rangeEnd
+            let shown = candles.filter { $0.minute >= rangeStart && $0.minute < rangeEnd }
+            let minimum = shown.map(\.low).min() ?? 0
+            let maximum = shown.map(\.high).max() ?? 1
             let padding = max((maximum - minimum) * 0.09, max(abs(maximum) * 0.0005, 0.005))
             low = max(0, minimum - padding)
             high = max(low + 0.01, maximum + padding)
@@ -342,6 +384,7 @@ struct IntradayChartView: View {
         case .pre: tickMinutes = [0, 90, 180, 270, 330]
         case .regular: tickMinutes = [0, 90, 180, 270, 390]
         case .post: tickMinutes = [0, 60, 120, 180, 240]
+        case .perpetual: tickMinutes = (0...4).map { layout.duration / 60 * Double($0) / 4 }
         default: tickMinutes = [0, 240, 480, 720, 960]
         }
         for index in 0...4 {
@@ -362,7 +405,9 @@ struct IntradayChartView: View {
             let date = layout.start.addingTimeInterval(layout.duration * fraction)
             let x = layout.plot.minX + CGFloat(fraction) * layout.plot.width
             let anchor: UnitPoint = index == 0 ? .leading : (index == 4 ? .trailing : .center)
-            context.draw(Text(Self.clockFormatter.string(from: date)).font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary),
+            let label = perpetual && index == 4 && Instrument.day(symbol, at: date) != effectiveDay
+                ? "24:00" : clockFormatter.string(from: date)
+            context.draw(Text(label).font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary),
                          at: CGPoint(x: x, y: layout.plot.maxY + 17), anchor: anchor)
         }
     }
@@ -410,8 +455,9 @@ struct IntradayChartView: View {
                                    style: StrokeStyle(lineWidth: 1.5, dash: sampled ? [3, 2] : []))
                 }
             }
-            if candle.origin != .yahoo || previous == nil {
-                let color: Color = candle.origin == .yahoo ? MarketTheme.accent : .orange
+            let online = candle.origin == .yahoo || candle.origin == .okx
+            if !online || previous == nil {
+                let color: Color = online ? MarketTheme.accent : .orange
                 context.fill(Path(ellipseIn: CGRect(x: point.x - 1.5, y: point.y - 1.5, width: 3, height: 3)), with: .color(color))
             }
             previous = candle
@@ -431,7 +477,7 @@ struct IntradayChartView: View {
                      with: .color(MarketTheme.accent))
         // Place the readout next to the real candle's closing-price crosshair,
         // flipping at plot edges so neither value is clipped by the popover.
-        let width: CGFloat = 178
+        let width: CGFloat = perpetual ? 226 : 178
         let height: CGFloat = 52
         let proposedX = point.x + 12 + width <= layout.plot.maxX ? point.x + 12 : point.x - width - 12
         let proposedY = point.y - height - 12 >= layout.plot.minY ? point.y - height - 12 : point.y + 12
@@ -441,13 +487,13 @@ struct IntradayChartView: View {
         let bubble = Path(roundedRect: box, cornerRadius: 7)
         context.fill(bubble, with: .color(Color(nsColor: .controlBackgroundColor).opacity(0.97)))
         context.stroke(bubble, with: .color(.secondary.opacity(0.35)), lineWidth: 0.7)
-        context.draw(Text("$\(Self.price(candle.close))")
+        context.draw(Text(priceLabel(candle.close))
             .font(.system(size: 13, weight: .semibold, design: .monospaced)).foregroundColor(.primary),
                      at: CGPoint(x: box.minX + 10, y: box.minY + 15), anchor: .leading)
         context.draw(Text(changeLabel(candle))
             .font(.system(size: 12, weight: .semibold, design: .monospaced)).foregroundColor(changeColor(candle)),
                      at: CGPoint(x: box.maxX - 10, y: box.minY + 15), anchor: .trailing)
-        context.draw(Text("\(Self.clockFormatter.string(from: candle.minute)) · \(referenceLabel(candle))")
+        context.draw(Text("\(clockFormatter.string(from: candle.minute)) · \(referenceLabel(candle))")
             .font(.system(size: 10)).foregroundColor(.secondary),
                      at: CGPoint(x: box.minX + 10, y: box.minY + 36), anchor: .leading)
     }

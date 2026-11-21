@@ -1,15 +1,30 @@
 import Foundation
 import CoreFoundation
 
-/// The prior regular-session close for one explicit New York trading date.
+public enum ReferenceBasis: String, Codable {
+    case previousClose, utcOpen
+}
+
+/// A price reference for one explicit instrument-local trading date.
 /// Callers must match `day` to the selected candle before displaying a percent.
 public struct ChartReference: Codable, Equatable {
     public let day: String
     public let previousClose: Double
+    public let basis: ReferenceBasis
 
-    public init(day: String, previousClose: Double) {
+    public init(day: String, previousClose: Double, basis: ReferenceBasis = .previousClose) {
         self.day = day
         self.previousClose = previousClose
+        self.basis = basis
+    }
+
+    private enum CodingKeys: String, CodingKey { case day, previousClose, basis }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        day = try values.decode(String.self, forKey: .day)
+        previousClose = try values.decode(Double.self, forKey: .previousClose)
+        basis = try values.decodeIfPresent(ReferenceBasis.self, forKey: .basis) ?? .previousClose
     }
 
     public func percentChange(at price: Double) -> Double? {

@@ -82,6 +82,20 @@ func runStoreChecks() -> Bool {
     check(!store.connected && store.connectionText == "已暂停", "stop reports disconnected and paused")
     check(store.quotes["AMD"] == newerSnapshot, "stop preserves last valid quote")
 
+    store.setSymbols(["AMD", "SOXLUSDT"])
+    let contract = "SOXL-USDT-SWAP"
+    let ticker = PriceQuote(symbol: contract, price: 33, timestamp: received,
+                            session: .perpetual, source: .stream, changePercent: -25,
+                            recordsPriceSample: false)
+    check(store.symbols == ["AMD", contract], "OKX alias becomes an explicit perpetual instrument")
+    check(store.ingest(ticker, received: received), "OKX ticker accepted")
+    check(store.candles[contract]?.isEmpty ?? true, "ticker activity does not fabricate traded candles")
+    let trade = PriceQuote(symbol: contract, price: 32.95, timestamp: time,
+                          session: .perpetual, source: .stream)
+    store.ingestTrades([trade], received: received)
+    check(store.quotes[contract] == ticker, "trade history does not rewind latest ticker or its 24h percentage")
+    check(store.candles[contract]?.last?.close == 32.95, "actual OKX trade records a local minute")
+
     if failures.isEmpty {
         print("PASS store checks: \(count) deterministic checks (no network)")
         return true

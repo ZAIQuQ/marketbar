@@ -46,13 +46,24 @@ struct MarketBarEntry {
 
 @MainActor
 private final class LiveDiagnostic {
-    let store = MarketStore(archive: nil)
+    let store: MarketStore
+    private let suite = "MarketBar.Diagnostic.\(UUID().uuidString)"
     var samples: [[String: Any]] = []
     var seen: [String: Date] = [:]
     var timer: Timer?
 
+    init() {
+        let defaults = UserDefaults(suiteName: suite)!
+        var symbols = UserDefaults.standard.stringArray(forKey: "MarketBar.watchlist") ?? ["AMD", "NVDA"]
+        if let index = CommandLine.arguments.firstIndex(of: "--symbols"),
+           CommandLine.arguments.indices.contains(index + 1),
+           let requested = try? Watchlist.parse(CommandLine.arguments[index + 1]) { symbols = requested }
+        defaults.set(symbols, forKey: "MarketBar.watchlist")
+        store = MarketStore(defaults: defaults, archive: nil)
+    }
+
     func start() {
-        print("Observing Yahoo Finance for 20s; no credentials or trades are involved.")
+        print("Observing market data for 20s; no credentials or trading actions are involved.")
         store.start()
         timer = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.sample() }
@@ -86,18 +97,22 @@ private final class LiveDiagnostic {
             "minuteBars": store.candles.mapValues { bars in
                 ["count": bars.count,
                  "premarket": bars.filter { $0.session == .pre }.count,
-                 "online": bars.filter { $0.origin == .yahoo }.count,
+                 "online": bars.filter { $0.origin == .yahoo || $0.origin == .okx }.count,
                  "local": bars.filter { $0.origin == .localSample }.count,
                  "mixed": bars.filter { $0.origin == .mixed }.count]
             }, "historyErrors": store.historyErrors,
-            "previousCloseByDay": store.chartReferences.mapValues { $0.mapValues(\.previousClose) }
+            "chartReferences": store.chartReferences.mapValues { refs in refs.mapValues {
+                ["price": $0.previousClose, "basis": $0.basis.rawValue] as [String: Any]
+            } },
+            "connections": Dictionary(uniqueKeysWithValues: store.symbols.map { ($0, store.connectionLabel(symbol: $0)) })
         ]
         if let data = try? JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys]),
            let text = String(data: data, encoding: .utf8) { print(text) }
         if let index = CommandLine.arguments.firstIndex(of: "--render-chart"),
            CommandLine.arguments.indices.contains(index + 1),
            let symbol = store.symbols.first, let bars = store.candles[symbol], !bars.isEmpty {
-            let hover = CommandLine.arguments.contains("--render-hover") ? bars.last(where: { $0.session == .pre })?.minute : nil
+            let expectedSession: TradingSession = Instrument.isOKX(symbol) ? .perpetual : .pre
+            let hover = CommandLine.arguments.contains("--render-hover") ? bars.last(where: { $0.session == expectedSession })?.minute : nil
             let view = IntradayChartView(symbol: symbol, candles: bars, loading: false, error: nil,
                                         references: store.chartReferences[symbol] ?? [:], initialHover: hover, onRefresh: {})
                 .padding(18).frame(width: 680, height: 480)
@@ -118,6 +133,7 @@ private final class LiveDiagnostic {
         }
         timer?.invalidate()
         store.stop()
+        UserDefaults.standard.removePersistentDomain(forName: suite)
         exit(samples.isEmpty ? 2 : 0)
     }
 }
