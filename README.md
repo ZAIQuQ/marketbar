@@ -4,20 +4,16 @@
 
 在 Mac 菜单栏查看自选行情。点开价格可看分时走势和一分钟 K 线，移到图上任意一分钟即可查看收盘价和涨跌幅。
 
-**[下载 Mac 版（DMG）](https://github.com/ZAIQuQ/marketbar/releases/latest/download/MarketBar.dmg)**　Apple Silicon 和 Intel · macOS 13 及以上
+**[MarketBar.dmg](https://github.com/ZAIQuQ/marketbar/releases/latest/download/MarketBar.dmg)** · macOS 13+ · Apple Silicon / Intel
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/demo-chart-dark.png">
   <img src="docs/images/demo-chart.png" width="760" alt="虚构品种 DEMO 的分钟图示例，十字线显示所选分钟的收盘价和涨跌幅">
 </picture>
 
-## 开始使用
+## 自选行情
 
-1. 双击 `MarketBar.dmg`，把窗口里的 **MarketBar** 拖到 **Applications（应用程序）**。复制完成后推出磁盘映像，从「应用程序」打开 MarketBar。
-2. 点击菜单栏的价格，打开右上角的滑杆按钮，输入想关注的代码，点「完成」。
-3. 点击铃铛右侧的矩形图标，勾选常驻菜单栏的品种。其余品种仍可在自选列表中查看。
-
-当前版本尚未经过 Apple 公证。如果首次打开时系统提示无法验证开发者，可查看 [Apple 的说明](https://support.apple.com/zh-cn/102445)。
+点击菜单栏价格，用面板右上角的滑杆按钮编辑自选。铃铛旁的矩形按钮可以勾选常驻菜单栏的品种。
 
 支持美股、OKX 现货和 USDT 永续合约，最多可添加 12 个品种。美股使用股票代码，现货使用完整交易对，永续合约使用以 `-SWAP` 结尾的合约代码。
 

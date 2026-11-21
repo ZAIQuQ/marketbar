@@ -4,20 +4,16 @@
 
 Follow a watchlist in your Mac’s menu bar. Click a price to open a line or one-minute candlestick chart. Hover over a minute to see its closing price and percentage change.
 
-**[Download for Mac (.dmg)](https://github.com/ZAIQuQ/marketbar/releases/latest/download/MarketBar.dmg)**　Apple Silicon and Intel · macOS 13 or later
+**[MarketBar.dmg](https://github.com/ZAIQuQ/marketbar/releases/latest/download/MarketBar.dmg)** · macOS 13+ · Apple Silicon / Intel
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/demo-chart-dark.png">
   <img src="docs/images/demo-chart.png" width="760" alt="A one-minute chart for the fictional DEMO instrument. The crosshair shows a sample closing price and percentage change.">
 </picture>
 
-## Get started
+## Your watchlist
 
-1. Double-click `MarketBar.dmg` and drag **MarketBar** onto **Applications** in the window. Once the copy finishes, eject the disk image and open MarketBar from Applications.
-2. Click a price in the menu bar. Click the sliders at the top right, enter the symbols you want to follow, then click **完成** (Done). The app’s controls are in Simplified Chinese.
-3. Click the rectangle beside the bell to choose which instruments appear in the menu bar. The full watchlist is still available in the panel.
-
-The app has not been notarized by Apple. If macOS asks about the developer on first launch, see [Apple’s guide to opening downloaded apps](https://support.apple.com/en-us/102445).
+Click a menu bar price and use the sliders button to edit your watchlist. The rectangle beside the bell lets you choose which prices appear in the menu bar. The app’s controls are in Simplified Chinese.
 
 Add up to 12 US stocks, OKX spot pairs or USDT perpetual swaps. Enter a ticker for a stock, the full trading pair for spot, or the contract code ending in `-SWAP` for a perpetual.
 
