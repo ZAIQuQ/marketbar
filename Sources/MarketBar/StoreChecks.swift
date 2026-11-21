@@ -95,6 +95,10 @@ func runStoreChecks() -> Bool {
     store.ingestTrades([trade], received: received)
     check(store.quotes[contract] == ticker, "trade history does not rewind latest ticker or its 24h percentage")
     check(store.candles[contract]?.last?.close == 32.95, "actual OKX trade records a local minute")
+    let weekend = ISO8601DateFormatter().date(from: "2026-11-21T15:00:00Z")!
+    check(store.menuSymbols(at: weekend) == [contract], "closed stocks are filtered before menu slots are selected")
+    defaults.set(false, forKey: "hideClosedStocks")
+    check(store.menuSymbols(at: weekend) == ["AMD", contract], "closed-stock hiding can be disabled")
 
     if failures.isEmpty {
         print("PASS store checks: \(count) deterministic checks (no network)")

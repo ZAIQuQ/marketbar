@@ -4,10 +4,14 @@ import CoreFoundation
 public struct OKXTicker {
     public let quote: PriceQuote
     public let reference: ChartReference?
+    public let bid: Double?
+    public let ask: Double?
 
-    public init(quote: PriceQuote, reference: ChartReference?) {
+    public init(quote: PriceQuote, reference: ChartReference?, bid: Double? = nil, ask: Double? = nil) {
         self.quote = quote
         self.reference = reference
+        self.bid = bid
+        self.ask = ask
     }
 }
 
@@ -39,7 +43,8 @@ public enum OKXDecoder {
                                previousClose: $0, basis: .utcOpen)
             }
             if latest == nil || timestamp >= latest!.quote.timestamp {
-                latest = OKXTicker(quote: quote, reference: reference)
+                latest = OKXTicker(quote: quote, reference: reference,
+                                   bid: positive(row["bidPx"]), ask: positive(row["askPx"]))
             }
         }
         return latest

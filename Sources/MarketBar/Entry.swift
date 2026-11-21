@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import SwiftUI
+import UserNotifications
 import TickerCore
 
 @main
@@ -8,8 +9,19 @@ struct MarketBarEntry {
     @MainActor static func main() {
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
-        if CommandLine.arguments.contains("--self-test") {
-            exit(runStoreChecks() ? 0 : 1)
+        if CommandLine.arguments.contains("--notification-status") {
+            guard Bundle.main.bundleURL.pathExtension == "app" else {
+                print("Notification status is available from the built app bundle.")
+                return
+            }
+            Task { @MainActor in
+                let settings = await UNUserNotificationCenter.current().notificationSettings()
+                print("authorization=\(settings.authorizationStatus.rawValue) alerts=\(settings.alertSetting.rawValue)")
+                exit(0)
+            }
+            app.run()
+        } else if CommandLine.arguments.contains("--self-test") {
+            exit(runStoreChecks() && runAlertMonitorChecks() ? 0 : 1)
         } else if CommandLine.arguments.contains("--archive-test") {
             Task { @MainActor in
                 let diskPassed = await runArchiveChecks()
@@ -51,6 +63,9 @@ private final class LiveDiagnostic {
     var samples: [[String: Any]] = []
     var seen: [String: Date] = [:]
     var timer: Timer?
+    private var duration = 20
+    private var monitorSamples: [[String: Any]] = []
+    private var monitorSampleSecond: Int64?
 
     init() {
         let defaults = UserDefaults(suiteName: suite)!
@@ -60,22 +75,45 @@ private final class LiveDiagnostic {
            let requested = try? Watchlist.parse(CommandLine.arguments[index + 1]) { symbols = requested }
         defaults.set(symbols, forKey: "MarketBar.watchlist")
         store = MarketStore(defaults: defaults, archive: nil)
+        if let index = CommandLine.arguments.firstIndex(of: "--seconds"),
+           CommandLine.arguments.indices.contains(index + 1),
+           let requested = Int(CommandLine.arguments[index + 1]), (10...300).contains(requested) { duration = requested }
+        if CommandLine.arguments.contains("--monitor") {
+            var configuration = AlertConfiguration.defaults
+            configuration.enabled = true
+            _ = store.monitor.updateConfiguration(configuration)
+        }
     }
 
     func start() {
-        print("Observing market data for 20s; no credentials or trading actions are involved.")
+        print("Observing market data for \(duration)s; no credentials or trading actions are involved.")
         store.start()
         timer = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.sample() }
         }
         RunLoop.main.add(timer!, forMode: .common)
         Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 20_000_000_000)
+            try? await Task.sleep(nanoseconds: UInt64(duration) * 1_000_000_000)
             finish()
         }
     }
 
     private func sample() {
+        if CommandLine.arguments.contains("--monitor") {
+            let now = Date()
+            let second = Int64(now.timeIntervalSince1970)
+            if monitorSampleSecond != second {
+                monitorSampleSecond = second
+                let evaluation = store.monitor.evaluation
+                var row: [String: Any] = ["time": now.timeIntervalSince1970,
+                    "phase": evaluation.phase.rawValue, "detail": evaluation.detail]
+                row["oneMinuteChange"] = evaluation.oneMinuteChange
+                row["threeMinuteChange"] = evaluation.threeMinuteChange
+                row["oneMinuteThreshold"] = evaluation.oneMinuteThreshold
+                row["threeMinuteThreshold"] = evaluation.threeMinuteThreshold
+                monitorSamples.append(row)
+            }
+        }
         for (symbol, quote) in store.quotes where quote.source == .stream {
             guard seen[symbol] != quote.timestamp else { continue }
             seen[symbol] = quote.timestamp
@@ -111,6 +149,7 @@ private final class LiveDiagnostic {
         }
         var connections: [String: String] = [:]
         for symbol in store.symbols { connections[symbol] = store.connectionLabel(symbol: symbol) }
+        let candleTimes: [String: String] = store.candleReceivedAt.mapValues { formatter.string(from: $0) }
         let result: [String: Any] = [
             "observedAt": formatter.string(from: Date()),
             "connection": store.connectionText,
@@ -120,7 +159,11 @@ private final class LiveDiagnostic {
             "minuteBars": minuteBars,
             "historyErrors": store.historyErrors,
             "chartReferences": references,
-            "connections": connections
+            "connections": connections,
+            "candleConnection": store.candleConnectionText,
+            "candleLastReceived": candleTimes,
+            "monitorSamples": monitorSamples,
+            "monitorAlerts": store.monitor.history.count
         ]
         if let data = try? JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys]),
            let text = String(data: data, encoding: .utf8) { print(text) }

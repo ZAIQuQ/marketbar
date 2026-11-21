@@ -6,6 +6,7 @@ import TickerCore
 /// request completion order, decide which price is allowed onto the screen.
 @MainActor
 final class MarketStore: ObservableObject {
+    let monitor: AlertMonitor
     @Published private(set) var symbols: [String]
     @Published private(set) var quotes: [String: PriceQuote] = [:]
     @Published private(set) var connectionText = "尚未连接"
@@ -17,6 +18,9 @@ final class MarketStore: ObservableObject {
     @Published private(set) var chartReferences: [String: [String: ChartReference]] = [:]
     @Published private(set) var historyErrors: [String: String] = [:]
     @Published private(set) var historyLoading = false
+    @Published private(set) var candleConnected = false
+    @Published private(set) var candleConnectionText = "分钟推送未连接"
+    @Published private(set) var candleReceivedAt: [String: Date] = [:]
 
     private let defaults: UserDefaults
     private let session: URLSession
@@ -38,6 +42,10 @@ final class MarketStore: ObservableObject {
     private var pollingTask: Task<Void, Never>?
     private var snapshotTask: Task<Void, Never>?
     private var okxClient: OKXClient?
+    private var candleClient: OKXCandleClient?
+    private var monitorTask: Task<Void, Never>?
+    private var candleStreamErrors: [String: String] = [:]
+    private var tradingSchedules: [String: EquityTradingSchedule] = [:]
     private var yahooConnected = false
     private var yahooStatus = "尚未连接"
     private var okxConnected = false
@@ -50,6 +58,22 @@ final class MarketStore: ObservableObject {
 
     func connectionLabel(symbol: String) -> String {
         Instrument.isOKX(symbol) ? okxStatus : yahooStatus
+    }
+
+    func isStockClosed(_ symbol: String, at now: Date) -> Bool {
+        EquityMarketClock.isClosed(symbol: symbol, at: now, schedule: tradingSchedules[symbol])
+    }
+
+    func menuSymbols(at now: Date) -> [String] {
+        let hideClosed = defaults.object(forKey: "hideClosedStocks") == nil || defaults.bool(forKey: "hideClosedStocks")
+        return hideClosed ? symbols.filter { !isStockClosed($0, at: now) } : symbols
+    }
+
+    func ensureMonitoringTarget() -> Bool {
+        if symbols.contains(monitor.symbol) { return true }
+        guard symbols.count < 12 else { return false }
+        setSymbols(symbols + [monitor.symbol])
+        return true
     }
 
     private func updateConnectionSummary() {
@@ -70,6 +94,7 @@ final class MarketStore: ObservableObject {
     init(defaults: UserDefaults = .standard, archive: CandleArchive? = CandleArchive()) {
         self.defaults = defaults
         self.archive = archive
+        monitor = AlertMonitor(defaults: defaults, systemEffects: defaults === UserDefaults.standard)
         let stored = defaults.stringArray(forKey: "MarketBar.watchlist") ?? ["AMD", "NVDA"]
         symbols = (try? Watchlist.parse(stored.joined(separator: ","))) ?? ["AMD", "NVDA"]
         let configuration = URLSessionConfiguration.ephemeral
@@ -78,6 +103,11 @@ final class MarketStore: ObservableObject {
         configuration.httpCookieStorage = nil
         configuration.timeoutIntervalForRequest = 15
         session = URLSession(configuration: configuration)
+        if !symbols.contains(monitor.symbol), monitor.isEnabled {
+            var settings = monitor.configuration
+            settings.enabled = false
+            _ = monitor.updateConfiguration(settings)
+        }
     }
 
     func start() {
@@ -93,7 +123,9 @@ final class MarketStore: ObservableObject {
         if !okxSymbols.isEmpty {
             let client = OKXClient(onTicker: { [weak self] ticker in
                 guard let self, self.isCurrent(token) else { return }
-                self.ingest(ticker.quote, received: Date())
+                let now = Date()
+                self.ingest(ticker.quote, received: now)
+                self.monitor.ingestTicker(ticker, receivedAt: now)
                 if let reference = ticker.reference {
                     self.chartReferences[ticker.quote.symbol, default: [:]][reference.day] = reference
                     self.dirtyDays[ticker.quote.symbol, default: []].insert(reference.day)
@@ -106,13 +138,41 @@ final class MarketStore: ObservableObject {
                 self.okxConnected = connected
                 self.okxStatus = message
                 self.updateConnectionSummary()
+                self.monitor.setConnected(connected && self.okxStreamErrors[self.monitor.symbol] == nil, reason: message)
             }, onError: { [weak self] symbol, message in
                 guard let self, self.isCurrent(token) else { return }
                 self.okxStreamErrors[symbol] = message.isEmpty ? nil : message
                 self.symbolErrors[symbol] = self.okxStreamErrors[symbol]
+                if symbol == self.monitor.symbol {
+                    self.monitor.setConnected(self.okxConnected && message.isEmpty, reason: message.isEmpty ? self.okxStatus : message)
+                }
             })
             okxClient = client
             client.start(symbols: okxSymbols)
+            let candleClient = OKXCandleClient(onCandles: { [weak self] bars in
+                guard let self, self.isCurrent(token) else { return }
+                self.ingestRemoteCandles(bars)
+                let now = Date()
+                for symbol in Set(bars.map(\.symbol)) { self.candleReceivedAt[symbol] = now }
+            }, onStatus: { [weak self] connected, message in
+                guard let self, self.isCurrent(token) else { return }
+                self.candleConnected = connected
+                self.candleConnectionText = message
+            }, onError: { [weak self] symbol, message in
+                guard let self, self.isCurrent(token) else { return }
+                self.candleStreamErrors[symbol] = message.isEmpty ? nil : message
+                self.historyErrors[symbol] = self.storageFailures[symbol] ?? self.candleStreamErrors[symbol]
+            })
+            self.candleClient = candleClient
+            candleClient.start(symbols: okxSymbols)
+        }
+        monitorTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self, self.isCurrent(token) else { return }
+                self.monitor.tick(at: Date())
+                do { try await Task.sleep(nanoseconds: 1_000_000_000) }
+                catch { return }
+            }
         }
         refreshSnapshots()
         pollingTask = Task { [weak self] in
@@ -142,6 +202,13 @@ final class MarketStore: ObservableObject {
         snapshotTask?.cancel()
         okxClient?.stop()
         okxClient = nil
+        candleClient?.stop()
+        candleClient = nil
+        monitorTask?.cancel()
+        monitorTask = nil
+        monitor.setConnected(false, reason: "行情已暂停，恢复后重新预热")
+        candleConnected = false
+        candleConnectionText = "分钟推送已暂停"
         persistenceTask?.cancel()
         socket?.cancel(with: .goingAway, reason: nil)
         streamTask = nil
@@ -172,6 +239,11 @@ final class MarketStore: ObservableObject {
         stop()
         symbols = normalized
         defaults.set(normalized, forKey: "MarketBar.watchlist")
+        if !symbols.contains(monitor.symbol), monitor.isEnabled {
+            var configuration = monitor.configuration
+            configuration.enabled = false
+            _ = monitor.updateConfiguration(configuration)
+        }
         let selected = Set(normalized)
         quotes = quotes.filter { selected.contains($0.key) }
         receivedAt = receivedAt.filter { selected.contains($0.key) }
@@ -203,17 +275,14 @@ final class MarketStore: ObservableObject {
                         // A failed fallback request is separate from transport health.
                         self.symbolErrors[result.symbol] = error
                     }
+                    if let schedule = result.schedule { self.tradingSchedules[result.symbol] = schedule }
                     if let reference = result.reference {
                         self.chartReferences[result.symbol, default: [:]][reference.day] = reference
                         self.dirtyDays[result.symbol, default: []].insert(reference.day)
                     }
                     if let bars = result.candles, !bars.isEmpty {
-                        var book = self.books[result.symbol] ?? CandleBook()
-                        book.mergeRemote(bars)
-                        self.books[result.symbol] = book
-                        self.candles[result.symbol] = book.candles
-                        self.markDirty(result.symbol, minutes: bars.map(\.minute))
-                        self.historyErrors[result.symbol] = self.storageFailures[result.symbol]
+                        self.ingestRemoteCandles(bars)
+                        self.historyErrors[result.symbol] = self.storageFailures[result.symbol] ?? self.candleStreamErrors[result.symbol]
                     } else {
                         self.historyErrors[result.symbol] = self.storageFailures[result.symbol]
                             ?? result.error ?? "线上分钟数据暂不可用，保留已有数据和本机采样。"
@@ -266,6 +335,18 @@ final class MarketStore: ObservableObject {
 
     func ingestTrades(_ trades: [PriceQuote], received: Date) {
         for trade in trades where Instrument.isOKX(trade.symbol) { recordSample(trade, received: received) }
+        monitor.ingestTrades(trades, receivedAt: received)
+    }
+
+    func ingestRemoteCandles(_ bars: [MinuteCandle]) {
+        for (symbol, rows) in Dictionary(grouping: bars, by: \.symbol) where symbols.contains(symbol) {
+            var book = books[symbol] ?? CandleBook()
+            book.mergeRemote(rows)
+            books[symbol] = book
+            candles[symbol] = book.candles
+            markDirty(symbol, minutes: rows.map(\.minute))
+            monitor.ingestCandles(rows)
+        }
     }
 
     private func runStream(generation token: UInt64) async {
@@ -385,6 +466,7 @@ final class MarketStore: ObservableObject {
         let quote: PriceQuote?
         let candles: [MinuteCandle]?
         let reference: ChartReference?
+        let schedule: EquityTradingSchedule?
         let error: String?
     }
 
@@ -420,7 +502,9 @@ final class MarketStore: ObservableObject {
                     let result = try YahooDecoder.chart(data, expectedSymbol: symbol)
                     let bars = try? CandleDecoder.chart(data, expectedSymbol: symbol, receivedAt: Date())
                     let reference = try? ChartReferenceDecoder.chart(data, expectedSymbol: symbol)
-                    return SnapshotResult(symbol: symbol, quote: result.quote, candles: bars, reference: reference, error: nil)
+                    let schedule = EquityMarketClock.schedule(from: data, fetchedAt: Date())
+                    return SnapshotResult(symbol: symbol, quote: result.quote, candles: bars,
+                                          reference: reference, schedule: schedule, error: nil)
                 } catch {
                     lastError = "备用快照无有效报价或格式异常"
                 }
@@ -429,7 +513,7 @@ final class MarketStore: ObservableObject {
                 lastError = "备用快照网络连接失败"
             }
         }
-        return SnapshotResult(symbol: symbol, quote: nil, candles: nil, reference: nil, error: lastError)
+        return SnapshotResult(symbol: symbol, quote: nil, candles: nil, reference: nil, schedule: nil, error: lastError)
     }
 
     private nonisolated static func fetchOKXSnapshot(symbol: String, session: URLSession) async -> SnapshotResult {
@@ -444,7 +528,7 @@ final class MarketStore: ObservableObject {
         do { bars = try OKXDecoder.candles(candleResult.get(), expectedSymbol: symbol, receivedAt: Date()) }
         catch { if failure == nil { failure = "OKX 分钟数据暂不可用" } }
         return SnapshotResult(symbol: symbol, quote: ticker?.quote, candles: bars,
-                              reference: ticker?.reference, error: failure)
+                              reference: ticker?.reference, schedule: nil, error: failure)
     }
 
     private nonisolated static func okxData(path: String, symbol: String, candles: Bool,

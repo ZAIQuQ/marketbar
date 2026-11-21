@@ -14,6 +14,7 @@
 - 自动保存分钟数据和昨收基准，离线可查看缓存；图中保留缺失分钟的空白。
 - 原生 Swift、AppKit、SwiftUI，无第三方运行时或 Swift 包依赖，无需账号。
 - 输入 `SOXLUSDT` 可监控 OKX 的 `SOXL-USDT-SWAP` 永续合约，支持其他完整的 `*-USDT-SWAP` 代码。
+- SOXLUSDT 可开启试运行异动提醒：成交确认、波动过滤、静默通知和保持唤醒，参数可调。
 
 ## 安装
 
@@ -33,7 +34,11 @@ bash scripts/install.sh
 
 点击菜单栏价格打开面板，在右上角设置自选股。列表顺序就是菜单栏顺序。点击股票卡片进入图表，鼠标悬停可查看该分钟的价格和涨跌幅。
 
-例如 `AMD, NVDA, SOXLUSDT`。`SOXL` 是美股 ETF；`SOXLUSDT` 是 OKX USDT 永续，二者分开显示。合约列表的涨跌幅为滚动 **24h**；合约图表使用 **UTC** 日期，十字线涨跌幅相对该 UTC 日开盘价。图表可切换近两小时和全天。
+例如 `AMD, NVDA, SOXLUSDT`。`SOXL` 是美股 ETF；`SOXLUSDT` 是 OKX USDT 永续，二者分开显示。合约列表的涨跌幅为滚动 **24h**。近两小时图按系统本地时间显示，全天图和数据日期按 UTC；十字线涨跌幅仍相对 UTC 日开盘价。
+
+休市美股默认从菜单栏隐藏，开市后恢复；自选列表和历史图表仍可查看。交易时段优先采用数据源日程，缺失时按纽约工作日的常规延长时段判断。
+
+点击「盯盘」设置 SOXLUSDT 提醒。提醒默认关闭；启用后经过实时预热才开始判断。规则及误报／漏报限制见[盯盘说明](docs/ALERTS.md)。这不是仓位或强平预警。
 
 | 标记 | 含义 |
 | --- | --- |
@@ -59,7 +64,7 @@ bash scripts/check.sh
 
 用 `swift run MarketBar --diagnose` 观察 20 秒网络行情并输出 JSON。该命令不写入行情缓存；没有收到推送时退出码为 2，休市或断网都可能导致这一结果。
 
-指定品种：`swift run MarketBar --diagnose --symbols 'AMD,SOXLUSDT'`。
+指定品种：`swift run MarketBar --diagnose --symbols 'AMD,SOXLUSDT'`。加 `--monitor --seconds 240` 可观察提醒状态；诊断模式不发送通知、不阻止睡眠、不写入提醒历史。
 
 `Sources/TickerCore` 负责行情解析和分钟数据合并，`Sources/MarketBar` 负责界面、网络连接及本地保存。问题反馈请附 macOS 版本、股票代码和出现问题的时间。
 

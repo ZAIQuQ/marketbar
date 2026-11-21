@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 import TickerCore
 
 /// A fixed time scale deliberately leaves unobserved minutes empty.
@@ -30,6 +31,7 @@ struct IntradayChartView: View {
     @State private var hoveringGap = false
     @State private var showingDataInfo = false
     @State private var showFullDay = false
+    @State private var localTimeZone = TimeZone.current
 
     private enum ChartMode: String, CaseIterable {
         case line = "分时"
@@ -37,11 +39,15 @@ struct IntradayChartView: View {
     }
 
     private var perpetual: Bool { Instrument.isOKX(symbol) }
-    private var timeZoneLabel: String { perpetual ? "UTC" : "美东" }
+    private var usesLocalTime: Bool { perpetual && !showFullDay }
+    private var timeZoneLabel: String { usesLocalTime ? "本地" : perpetual ? "UTC" : "美东" }
+    private var dataDayLabel: String { perpetual ? "UTC" : "美东" }
     private var sourceLabel: String { perpetual ? "OKX" : "Yahoo Finance" }
     private static let newYorkClock = makeClockFormatter(TimeZone(identifier: "America/New_York")!)
     private static let utcClock = makeClockFormatter(TimeZone(secondsFromGMT: 0)!)
-    private var clockFormatter: DateFormatter { perpetual ? Self.utcClock : Self.newYorkClock }
+    private var clockFormatter: DateFormatter {
+        usesLocalTime ? Self.makeClockFormatter(localTimeZone) : perpetual ? Self.utcClock : Self.newYorkClock
+    }
 
     private static func makeClockFormatter(_ zone: TimeZone) -> DateFormatter {
         let formatter = DateFormatter()
@@ -88,6 +94,9 @@ struct IntradayChartView: View {
                 Text(Instrument.displaySymbol(symbol)).font(.system(size: 22, weight: .semibold, design: .rounded))
                     .help(perpetual ? "\(symbol) · OKX 永续" : symbol)
                 Text(Instrument.currency(symbol)).font(.system(size: 10, weight: .medium)).foregroundStyle(.tertiary)
+                if usesLocalTime {
+                    Text("本地时间").font(.system(size: 10)).foregroundStyle(.secondary)
+                }
                 Spacer()
                 if loading { ProgressView().controlSize(.small) }
                 Button(action: onRefresh) { Image(systemName: "arrow.clockwise") }
@@ -119,7 +128,7 @@ struct IntradayChartView: View {
                     }.padding(3).background(MarketTheme.subtleSurface, in: RoundedRectangle(cornerRadius: 9))
                 }
                 Spacer(minLength: 0)
-                Picker("\(timeZoneLabel)日期", selection: Binding(
+                Picker("\(dataDayLabel)日期", selection: Binding(
                     get: { effectiveDay }, set: { selectedDay = $0 }
                 )) {
                     if dayKeys.isEmpty { Text("暂无日期").tag("") }
@@ -128,7 +137,7 @@ struct IntradayChartView: View {
                 .labelsHidden()
                 .frame(width: 136)
                 .disabled(dayKeys.isEmpty)
-                .help("\(timeZoneLabel)日期")
+                .help(perpetual ? "数据按 UTC 日期分组；近 2 小时刻度使用系统本地时间。" : "美东日期")
             }
 
             GeometryReader { geometry in
@@ -192,7 +201,7 @@ struct IntradayChartView: View {
                     }
                 }
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel("\(Instrument.displaySymbol(symbol))，\(effectiveDay) \(timeZoneLabel)时间，\(selectedSession.label)，\(visible.count) 个有数据的分钟。缺失分钟留空。")
+                .accessibilityLabel("\(Instrument.displaySymbol(symbol))，\(effectiveDay) \(dataDayLabel)数据日，\(timeZoneLabel)时间刻度，\(selectedSession.label)，\(visible.count) 个有数据的分钟。缺失分钟留空。")
             }
             .frame(height: error?.isEmpty == false ? 208 : 248)
 
@@ -202,7 +211,8 @@ struct IntradayChartView: View {
                     legendItem("含本机采样", color: .orange, outlined: true)
                 }
                 Spacer(minLength: 0)
-                Text("\(timeZoneLabel)时间").font(.system(size: 10)).foregroundStyle(.secondary)
+                Text(usesLocalTime ? "本地时间 · 数据按 UTC 日" : "\(timeZoneLabel)时间")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
                 Button { showingDataInfo.toggle() } label: { Image(systemName: "info.circle") }
                     .buttonStyle(.plain).foregroundStyle(.secondary)
                     .help("数据说明")
@@ -213,6 +223,9 @@ struct IntradayChartView: View {
                             Text(perpetual
                                  ? "图中涨跌幅相对所选 UTC 日期的开盘价；自选列表显示滚动 24h 涨跌幅。价格单位为 USDT。"
                                  : "涨跌幅相对所选交易日的昨收价。")
+                            if perpetual {
+                                Text("近 2 小时按系统本地时间显示，全天按 UTC 显示；切换时区不改变开盘基准。")
+                            }
                             Text(perpetual
                                  ? "行情更新时间是 OKX 消息生成时间，盘口变化也可能触发更新。当前分钟仍会变化。"
                                  : "当前分钟仍会更新。")
@@ -233,6 +246,11 @@ struct IntradayChartView: View {
         }
         .onChange(of: selectedDay) { _ in clearHover() }
         .onChange(of: selectedSession) { _ in clearHover() }
+        .onReceive(NotificationCenter.default.publisher(for: .NSSystemTimeZoneDidChange)
+            .receive(on: RunLoop.main)) { _ in
+                localTimeZone = .current
+                clearHover()
+            }
     }
 
     @ViewBuilder
@@ -252,7 +270,7 @@ struct IntradayChartView: View {
                         .padding(.horizontal, 8).padding(.vertical, 5)
                         .background(changeColor(candle).opacity(0.08), in: RoundedRectangle(cornerRadius: 7))
                 }
-                Text("\(clockFormatter.string(from: candle.minute)) · \(selectedSession.label) · \(referenceLabel(candle))")
+                Text("\(detailTime(candle.minute))\(usesLocalTime ? " 本地" : "") · \(selectedSession.label) · \(referenceLabel(candle))")
                     .font(.system(size: 11)).foregroundStyle(.secondary).monospacedDigit()
             }
         } else {
@@ -312,6 +330,13 @@ struct IntradayChartView: View {
 
     private func priceLabel(_ value: Double) -> String {
         perpetual ? Self.price(value) : "$\(Self.price(value))"
+    }
+
+    private func detailTime(_ date: Date) -> String {
+        guard usesLocalTime else { return clockFormatter.string(from: date) }
+        let formatter = Self.makeClockFormatter(localTimeZone)
+        formatter.dateFormat = "MM-dd HH:mm"
+        return formatter.string(from: date)
     }
 
     private static func price(_ value: Double) -> String {
@@ -405,7 +430,7 @@ struct IntradayChartView: View {
             let date = layout.start.addingTimeInterval(layout.duration * fraction)
             let x = layout.plot.minX + CGFloat(fraction) * layout.plot.width
             let anchor: UnitPoint = index == 0 ? .leading : (index == 4 ? .trailing : .center)
-            let label = perpetual && index == 4 && Instrument.day(symbol, at: date) != effectiveDay
+            let label = perpetual && showFullDay && index == 4 && Instrument.day(symbol, at: date) != effectiveDay
                 ? "24:00" : clockFormatter.string(from: date)
             context.draw(Text(label).font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary),
                          at: CGPoint(x: x, y: layout.plot.maxY + 17), anchor: anchor)
@@ -477,7 +502,7 @@ struct IntradayChartView: View {
                      with: .color(MarketTheme.accent))
         // Place the readout next to the real candle's closing-price crosshair,
         // flipping at plot edges so neither value is clipped by the popover.
-        let width: CGFloat = perpetual ? 226 : 178
+        let width: CGFloat = usesLocalTime ? 270 : perpetual ? 226 : 178
         let height: CGFloat = 52
         let proposedX = point.x + 12 + width <= layout.plot.maxX ? point.x + 12 : point.x - width - 12
         let proposedY = point.y - height - 12 >= layout.plot.minY ? point.y - height - 12 : point.y + 12
@@ -493,7 +518,7 @@ struct IntradayChartView: View {
         context.draw(Text(changeLabel(candle))
             .font(.system(size: 12, weight: .semibold, design: .monospaced)).foregroundColor(changeColor(candle)),
                      at: CGPoint(x: box.maxX - 10, y: box.minY + 15), anchor: .trailing)
-        context.draw(Text("\(clockFormatter.string(from: candle.minute)) · \(referenceLabel(candle))")
+        context.draw(Text("\(detailTime(candle.minute)) · \(referenceLabel(candle))")
             .font(.system(size: 10)).foregroundColor(.secondary),
                      at: CGPoint(x: box.minX + 10, y: box.minY + 36), anchor: .leading)
     }

@@ -12,6 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var timer: Timer?
     private var workspaceObservers: [NSObjectProtocol] = []
     private var terminationSignal: DispatchSourceSignal?
+    private var alertOpenObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -35,6 +36,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         workspaceObservers.append(center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.store.reconnect() }
         })
+        alertOpenObserver = NotificationCenter.default.addObserver(
+            forName: Notification.Name("MarketBar.openSymbol"), object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.showPopover() }
+        }
         let source = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
         source.setEventHandler {
             // terminateLater runs a nested AppKit loop. Enter it outside a
@@ -51,17 +57,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        store.monitor.shutdown()
         store.stop()
         timer?.invalidate()
         workspaceObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
+        if let alertOpenObserver { NotificationCenter.default.removeObserver(alertOpenObserver) }
+        alertOpenObserver = nil
         terminationSignal?.cancel()
         terminationSignal = nil
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         store.stop()
+        store.monitor.shutdown()
         Task { @MainActor in
             await store.finishHistory()
+            await store.monitor.flushEvents()
             sender.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater
@@ -69,26 +80,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     @objc private func togglePopover() {
         if popover.isShown { popover.performClose(nil); return }
+        if store.monitor.pendingAlert != nil {
+            NotificationCenter.default.post(name: Notification.Name("MarketBar.openSymbol"),
+                                            object: nil, userInfo: ["symbol": store.monitor.symbol])
+            return
+        }
+        showPopover()
+    }
+
+    private func showPopover() {
         guard let button = statusItem.button else { return }
         NSApp.activate(ignoringOtherApps: true)
-        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        if !popover.isShown {
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        }
         popover.contentViewController?.view.window?.makeKey()
     }
 
     private func updateTitle() {
         let configured = UserDefaults.standard.integer(forKey: "menuSymbolCount")
         let count = configured == 0 ? 2 : min(3, max(1, configured))
-        let parts = store.symbols.prefix(count).map { symbol -> String in
+        let now = Date()
+        let menuSymbols = store.menuSymbols(at: now)
+        let hiddenCount = max(0, store.symbols.count - menuSymbols.count)
+        let parts = menuSymbols.prefix(count).map { symbol -> String in
             let name = Instrument.displaySymbol(symbol)
             let connection = store.isConnected(symbol: symbol) ? "" : "◌ "
             guard let quote = store.quotes[symbol] else { return "\(connection)\(name) —" }
-            let old = Date().timeIntervalSince(quote.timestamp) > 60
+            let old = now.timeIntervalSince(quote.timestamp) > 60
             let marker = old ? "·旧" : quote.source == .snapshot ? "≈" : shortSession(quote.session)
             return "\(connection)\(name) \(quote.price.formatted(.number.precision(.fractionLength(2))))\(marker)"
         }
         statusItem.button?.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
-        statusItem.button?.title = parts.joined(separator: "  ")
-        statusItem.button?.toolTip = "MarketBar · \(store.connectionText)\n前 / 中 / 后：报价时段 · 永：OKX 永续 · ≈：快照 · 旧：超过 60 秒未更新"
+        let pending = store.monitor.pendingAlert != nil
+        statusItem.button?.title = (pending ? "⚠ " : "") + (parts.isEmpty ? "MarketBar" : parts.joined(separator: "  "))
+        statusItem.button?.toolTip = (pending ? "SOXLUSDT 有已确认的异动，点击查看提醒。\n" : "")
+            + (hiddenCount > 0 ? "\(hiddenCount) 只休市股票已隐藏，仍可在列表查看。\n" : "")
+            + "MarketBar · \(store.connectionText)\n前 / 中 / 后：报价时段 · 永：OKX 永续 · ≈：快照 · 旧：超过 60 秒未更新"
     }
 }
 
@@ -108,10 +136,12 @@ struct TickerPanel: View {
     var previewDate: Date? = nil
     var onChartVisibility: (Bool) -> Void = { _ in }
     @AppStorage("menuSymbolCount") private var menuSymbolCount = 2
+    @AppStorage("hideClosedStocks") private var hideClosedStocks = true
     @State private var editing = false
     @State private var draft = ""
     @State private var inputError: String?
     @State private var selectedSymbol: String?
+    @State private var showingMonitor = false
     private let names = ["AMD": "超威半导体", "NVDA": "英伟达", "AAPL": "苹果", "MSFT": "微软", "TSLA": "特斯拉", "AMZN": "亚马逊", "GOOGL": "Alphabet", "META": "Meta"]
     private var hasOKX: Bool { store.symbols.contains { Instrument.isOKX($0) } }
     private var hasStocks: Bool { store.symbols.contains { !Instrument.isOKX($0) } }
@@ -121,7 +151,12 @@ struct TickerPanel: View {
 
     var body: some View {
         Group {
-            if let symbol = selectedSymbol {
+            if showingMonitor {
+                AlertPanel(monitor: store.monitor, onEnable: { store.ensureMonitoringTarget() }) {
+                    showingMonitor = false
+                    onChartVisibility(selectedSymbol != nil)
+                }
+            } else if let symbol = selectedSymbol {
                 VStack(alignment: .leading, spacing: 12) {
                     chartNavigation(symbol)
                     Rectangle().fill(MarketTheme.separator).frame(height: 1)
@@ -138,6 +173,11 @@ struct TickerPanel: View {
         }
         .tint(MarketTheme.accent)
         .background(MarketTheme.surface)
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("MarketBar.openSymbol"))
+            .receive(on: RunLoop.main)) { _ in
+                selectedSymbol = store.monitor.symbol
+                openMonitor()
+            }
     }
 
     private var watchlistPanel: some View {
@@ -150,6 +190,7 @@ struct TickerPanel: View {
                         .font(.system(size: 11)).foregroundStyle(.secondary)
                 }
                 Spacer()
+                AlertToolbarButton(monitor: store.monitor, action: openMonitor)
                 Button {
                     draft = store.symbols.joined(separator: ", ")
                     withAnimation(.easeOut(duration: 0.15)) { editing.toggle() }
@@ -241,6 +282,9 @@ struct TickerPanel: View {
                 Button("完成", action: saveWatchlist)
                     .buttonStyle(.borderedProminent).controlSize(.small).keyboardShortcut(.return)
             }
+            Toggle("休市股票自动从菜单栏隐藏", isOn: $hideClosedStocks)
+                .font(.system(size: 11)).toggleStyle(.switch).controlSize(.small)
+                .help("列表仍保留这些股票，开市后自动恢复。永续合约不受影响。")
             Text("逗号或空格分隔；SOXLUSDT 对应 SOXL-USDT-SWAP 永续。")
                 .font(.system(size: 10)).foregroundStyle(.secondary)
         }
@@ -252,6 +296,7 @@ struct TickerPanel: View {
     private func quoteRow(_ symbol: String, now: Date) -> some View {
         let quote = store.quotes[symbol]
         let perpetual = Instrument.isOKX(symbol)
+        let closed = store.isStockClosed(symbol, at: now)
         let change = quote.flatMap { perpetual ? $0.changePercent : dailyChange($0) }
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
@@ -303,7 +348,7 @@ struct TickerPanel: View {
                         .font(.system(size: 9, weight: .medium)).foregroundStyle(MarketTheme.accent)
                         .padding(.horizontal, 6).padding(.vertical, 3)
                         .background(MarketTheme.accent.opacity(0.075), in: RoundedRectangle(cornerRadius: 4))
-                    Circle().fill(store.isConnected(symbol: symbol) ? MarketTheme.accent : .orange)
+                    Circle().fill(closed ? Color.secondary : store.isConnected(symbol: symbol) ? MarketTheme.accent : .orange)
                         .frame(width: 4, height: 4).help(store.connectionLabel(symbol: symbol))
                     Text(perpetual ? "行情更新" : quote.source == .stream ? "推送" : "快照")
                     Text("·").foregroundStyle(.tertiary)
@@ -314,14 +359,14 @@ struct TickerPanel: View {
                         Image(systemName: "exclamationmark.triangle")
                             .foregroundStyle(.orange).help(error)
                     }
-                    Text(age > 60 ? "\(ageText(age))未更新" : "\(ageText(age))前")
-                        .foregroundStyle(age > 60 ? Color.orange : Color.secondary)
+                    Text(closed ? "休市" : age > 60 ? "\(ageText(age))未更新" : "\(ageText(age))前")
+                        .foregroundStyle(!closed && age > 60 ? Color.orange : Color.secondary)
                 }
                 .font(.system(size: 9))
                 .foregroundStyle(.secondary)
                 .help(quoteHelp(quote))
             } else {
-                Text(store.symbolErrors[symbol] ?? "等待报价…")
+                Text(store.symbolErrors[symbol] ?? (closed ? "休市 · 暂无报价" : "等待报价…"))
                     .font(.system(size: 10)).foregroundStyle(store.symbolErrors[symbol] == nil ? Color.secondary : .orange)
                     .lineLimit(1).help(store.symbolErrors[symbol] ?? "正在接收行情")
             }
@@ -368,18 +413,28 @@ struct TickerPanel: View {
             Spacer()
             TimelineView(.periodic(from: .now, by: 1)) { context in
                 if let quote = store.quotes[symbol] {
-                    let age = max(0, (previewDate ?? context.date).timeIntervalSince(quote.timestamp))
-                    Text("\(Instrument.isOKX(symbol) ? "行情更新" : quote.source == .snapshot ? "快照" : "报价") \(ageText(age))前")
+                    let now = previewDate ?? context.date
+                    let age = max(0, now.timeIntervalSince(quote.timestamp))
+                    let closed = store.isStockClosed(symbol, at: now)
+                    Text(closed ? "休市 · 保留最近报价" : "\(Instrument.isOKX(symbol) ? "行情更新" : quote.source == .snapshot ? "快照" : "报价") \(ageText(age))前")
                         .font(.system(size: 10)).monospacedDigit()
-                        .foregroundStyle(age > 60 ? Color.orange : Color.secondary)
+                        .foregroundStyle(!closed && age > 60 ? Color.orange : Color.secondary)
                         .help(quoteHelp(quote))
                 } else {
                     Text("等待报价…").font(.system(size: 10)).foregroundStyle(.secondary)
                 }
             }
             sourceConnectionBadge(symbol)
+            if symbol == store.monitor.symbol {
+                AlertToolbarButton(monitor: store.monitor, action: openMonitor)
+            }
         }
         .frame(height: 24)
+    }
+
+    private func openMonitor() {
+        showingMonitor = true
+        onChartVisibility(true)
     }
 
     @ViewBuilder

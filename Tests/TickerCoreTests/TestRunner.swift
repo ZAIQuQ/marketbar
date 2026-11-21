@@ -46,12 +46,17 @@ func XCTUnwrap<T>(_ value: T?, file: StaticString = #filePath, line: UInt = #lin
 @main
 struct CoreTestRunner {
     static func main() {
+        let marketHours = EquityHoursTests()
         let decoder = YahooDecoderTests()
         let watchlist = WatchlistTests()
         let candles = CandleTests()
         let references = ChartReferenceTests()
         let okx = OKXTests()
+        let anomalies = AnomalyTests()
         let tests: [(String, () throws -> Void)] = [
+            ("equity extended hours and DST", marketHours.testExtendedHoursBoundariesAndDST),
+            ("weekend visibility keeps perpetuals", marketHours.testWeekendDoesNotHidePerpetuals),
+            ("fresh trading schedule and stale fallback", marketHours.testFreshScheduleAndStaleFallback),
             ("observed premarket stream", decoder.testObservedPremarketFrameAndJSONEnvelope),
             ("stream session flags", decoder.testPremarketRegularAndPostmarketFlags),
             ("unknown protobuf fields and heartbeats", decoder.testUnknownFieldsAreSkippedAndHeartbeatIgnored),
@@ -96,7 +101,19 @@ struct CoreTestRunner {
             ("OKX candle confirmation and invalid rows", okx.testCandlesDecodeConfirmationAndSkipInvalidRows),
             ("OKX final candle precedence and restore", okx.testOKXFinalFlagControlsCompletionAndLaterPartialCannotReopen),
             ("OKX current candle upserts", okx.testOKXCurrentMinuteUpsertsAndOlderResponseIsIgnored),
-            ("OKX model additions preserve legacy JSON", okx.testLegacyReferenceAndCandleJSONStillDecode)
+            ("OKX model additions preserve legacy JSON", okx.testLegacyReferenceAndCandleJSONStillDecode),
+            ("monitor sustained move and confirmation", anomalies.testSustainedMoveNeedsWarmupAndFiveSecondsConfirmation),
+            ("monitor isolated outliers and noisy flat", anomalies.testIsolatedOutlierAndNoisyFlatNeverConfirm),
+            ("monitor duplicate trades and ticker-only updates", anomalies.testTickerUpdatesAndDuplicateExecutionCannotCreateConfirmation),
+            ("monitor stale spread sparse and reconnect reset", anomalies.testStaleWideSpreadSparseAndResetFailClosed),
+            ("monitor backfill and future executions rejected", anomalies.testCachedOrFutureExecutionsCannotPrefillWarmup),
+            ("monitor cooldown and confirmed escalation", anomalies.testCooldownSuppressesRepeatsButAllowsConfirmedEscalation),
+            ("monitor configurable direction and rewarm", anomalies.testDirectionChangesRequireFreshWarmup),
+            ("monitor independent direction cooldowns", anomalies.testOppositeDirectionsHaveIndependentCooldowns),
+            ("monitor adaptive volatility and exclusion window", anomalies.testVolatilityRaisesThresholdAndExcludesCurrentWindow),
+            ("monitor incomplete future and gapped baseline", anomalies.testPartialMixedFutureAndGappedBaselineAreNotEvidence),
+            ("monitor fixed floor opt-out preserves warmup", anomalies.testFixedThresholdOptOutStillNeedsLiveWarmup),
+            ("monitor configuration and BBO parsing", anomalies.testConfigurationAndBidAskParsing)
         ]
         for (name, test) in tests {
             let before = failureCount

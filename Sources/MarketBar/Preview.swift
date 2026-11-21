@@ -84,4 +84,17 @@ func renderProjectPreview(to directory: URL) async throws {
             try data.write(to: directory.appendingPathComponent(name), options: .atomic)
         }
     }
+    let monitorView = AlertPanel(monitor: store.monitor, onBack: {})
+        .environment(\.colorScheme, .light)
+    NSApp.appearance = NSAppearance(named: .aqua)
+    let panel = NSHostingView(rootView: monitorView)
+    panel.appearance = NSApp.appearance
+    panel.frame = NSRect(x: 0, y: 0, width: 680, height: 560)
+    panel.layoutSubtreeIfNeeded()
+    if let bitmap = panel.bitmapImageRepForCachingDisplay(in: panel.bounds) {
+        panel.cacheDisplay(in: panel.bounds, to: bitmap)
+        if let data = bitmap.representation(using: .png, properties: [:]) {
+            try data.write(to: directory.appendingPathComponent("monitor-settings.png"), options: .atomic)
+        }
+    }
 }
