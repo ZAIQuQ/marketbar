@@ -21,7 +21,7 @@ Add up to 12 US stocks, OKX spot pairs or USDT perpetual swaps. Enter a ticker f
 
 **US stocks** have separate premarket, regular and after-hours views. Charts use New York trading dates and show the change from the previous close. By default, a stock leaves the menu bar when trading closes and returns when trading resumes.
 
-**OKX charts** offer several time ranges. Rolling windows use your Mac’s local time and the full-day view uses UTC. The watchlist shows the rolling 24-hour change. The chart measures change from the UTC day’s open.
+**OKX charts** show one-minute candles over rolling windows from 30 minutes to 24 hours. The time axis uses your Mac’s local time. The watchlist shows the rolling 24-hour change. The chart measures change from the UTC day’s open.
 
 **Market alerts** are available from the bell. The panel shows the supported instrument and settings. Qualifying price and volume changes appear in the menu bar and can trigger a silent macOS notification. [Alert settings (Chinese)](docs/ALERTS.md)
 

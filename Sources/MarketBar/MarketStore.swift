@@ -439,7 +439,7 @@ final class MarketStore: ObservableObject {
         if let task = snapshotTask { await task.value }
         guard isCurrent(token), !Task.isCancelled, symbols.contains(symbol) else { return }
         let latest = candles[symbol]?.last(where: { Instrument.day(symbol, at: $0.minute) == day })?.minute ?? anchor
-        guard let range = ChartWindow.historyRange(minutes: minutes, anchor: latest) else { return }
+        guard let range = ChartWindow.range(minutes: minutes, anchor: latest) else { return }
         let key = ChartHistoryKey(symbol: symbol, range: range)
         if ChartWindow.missingMinutes(in: range, symbol: symbol, candles: candles[symbol] ?? []).isEmpty {
             chartHistoryErrors[symbol] = nil
@@ -504,7 +504,7 @@ final class MarketStore: ObservableObject {
                     throw ChartHistoryFailure(message: "历史数据时间范围异常，已有行情已保留。")
                 }
                 guard let first = bars.first?.minute else { break }
-                searched.append(ChartTimeRange(start: min(first, cursor.addingTimeInterval(-6_000)), end: cursor))
+                searched.append(ChartTimeRange(start: first, end: cursor))
                 let relevant = bars.filter { key.range.contains($0.minute) }
                 if !relevant.isEmpty { ingestRemoteCandles(relevant) }
             }

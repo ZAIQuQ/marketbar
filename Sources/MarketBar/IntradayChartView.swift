@@ -73,18 +73,15 @@ struct IntradayChartView: View {
 
     private var okxMarket: Bool { Instrument.isOKX(symbol) }
     private var windowMinutes: Int { ChartWindow.normalized(configuredWindowMinutes) }
-    private var showFullDay: Bool { windowMinutes == 0 }
-    private var usesLocalTime: Bool { okxMarket && !showFullDay }
     private var historyTaskID: String {
         "\(symbol)|\(windowMinutes)|\(effectiveDay)|\(historyRevision)|\(manualHistoryRevision)"
     }
-    private var timeZoneLabel: String { usesLocalTime ? "本地" : okxMarket ? "UTC" : "美东" }
+    private var timeZoneLabel: String { okxMarket ? "本地" : "美东" }
     private var dataDayLabel: String { okxMarket ? "UTC" : "美东" }
     private var sourceLabel: String { okxMarket ? "OKX" : "Yahoo Finance" }
     private static let newYorkClock = makeClockFormatter(TimeZone(identifier: "America/New_York")!)
-    private static let utcClock = makeClockFormatter(TimeZone(secondsFromGMT: 0)!)
     private var clockFormatter: DateFormatter {
-        usesLocalTime ? Self.makeClockFormatter(localTimeZone) : okxMarket ? Self.utcClock : Self.newYorkClock
+        okxMarket ? Self.makeClockFormatter(localTimeZone) : Self.newYorkClock
     }
 
     private static func makeClockFormatter(_ zone: TimeZone) -> DateFormatter {
@@ -141,7 +138,7 @@ struct IntradayChartView: View {
                 Text(Instrument.displaySymbol(symbol)).font(.system(size: 22, weight: .semibold, design: .rounded))
                     .help(okxMarket ? "\(symbol) · OKX \(Instrument.marketSession(symbol).label)" : symbol)
                 Text(Instrument.currency(symbol)).font(.system(size: 10, weight: .medium)).foregroundStyle(.tertiary)
-                if usesLocalTime {
+                if okxMarket {
                     Text("本地时间").font(.system(size: 10)).foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -183,8 +180,9 @@ struct IntradayChartView: View {
                     }.padding(3).background(MarketTheme.subtleSurface, in: RoundedRectangle(cornerRadius: 9))
                 }
                 Spacer(minLength: 0)
-                Picker(usesLocalTime ? "窗口截止 UTC 日期" : "\(dataDayLabel)日期", selection: Binding(
-                    get: { effectiveDay }, set: { selectedDay = $0 }
+                Picker(okxMarket ? "窗口截止 UTC 日期" : "\(dataDayLabel)日期", selection: Binding(
+                    get: { effectiveDay },
+                    set: { selectedDay = okxMarket && $0 == defaultDay ? "" : $0 }
                 )) {
                     if dayKeys.isEmpty { Text("暂无日期").tag("") }
                     ForEach(dayKeys, id: \.self) { Text($0).tag($0) }
@@ -255,7 +253,7 @@ struct IntradayChartView: View {
                     }
                 }
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel("\(Instrument.displaySymbol(symbol))，\(effectiveDay) \(usesLocalTime ? "UTC 截止日" : dataDayLabel + "数据日")，\(timeZoneLabel)时间刻度，\(selectedSession.label)，\(visible.count) 个有数据的分钟。缺失分钟留空。")
+                .accessibilityLabel("\(Instrument.displaySymbol(symbol))，\(effectiveDay) \(okxMarket ? "UTC 截止日" : dataDayLabel + "数据日")，\(timeZoneLabel)时间刻度，\(selectedSession.label)，\(visible.count) 个有数据的分钟。缺失分钟留空。")
             }
             .frame(height: error?.isEmpty == false ? 208 : 248)
 
@@ -265,7 +263,7 @@ struct IntradayChartView: View {
                     legendItem("含本机采样", color: .orange, outlined: true)
                 }
                 Spacer(minLength: 0)
-                Text(usesLocalTime ? "本地时间 · 数据按 UTC 日" : "\(timeZoneLabel)时间")
+                Text(okxMarket ? "本地时间 · 数据按 UTC 日" : "\(timeZoneLabel)时间")
                     .font(.system(size: 10)).foregroundStyle(.secondary)
                 Button { showingDataInfo.toggle() } label: { Image(systemName: "info.circle") }
                     .buttonStyle(.plain).foregroundStyle(.secondary)
@@ -278,7 +276,7 @@ struct IntradayChartView: View {
                                  ? "每根 K 线按其所属 UTC 日期的开盘价计算涨跌幅；自选列表显示滚动 24h 涨跌幅。价格单位为 USDT。"
                                  : "涨跌幅相对所选交易日的昨收价。")
                             if okxMarket {
-                                Text("滚动窗口按系统本地时间显示，全天按 UTC 显示。历史数据按需回填，缺口保留空白。")
+                                Text("时间轴使用系统本地时间。历史数据按需回填，缺口保留空白。")
                             }
                             Text(okxMarket
                                  ? "行情更新时间是 OKX 消息生成时间，盘口变化也可能触发更新。当前分钟仍会变化。"
@@ -292,6 +290,9 @@ struct IntradayChartView: View {
             }
         }
         .padding(14)
+        .onAppear {
+            if okxMarket && configuredWindowMinutes == 0 { configuredWindowMinutes = windowMinutes }
+        }
         .onChange(of: symbol) { _ in
             selectedDay = ""
             selectedSession = okxMarket ? Instrument.marketSession(symbol) : .pre
@@ -328,7 +329,7 @@ struct IntradayChartView: View {
                         .padding(.horizontal, 8).padding(.vertical, 5)
                         .background(changeColor(candle).opacity(0.08), in: RoundedRectangle(cornerRadius: 7))
                 }
-                Text("\(detailTime(candle.minute))\(usesLocalTime ? " 本地" : "") · \(selectedSession.label) · \(referenceLabel(candle))")
+                Text("\(detailTime(candle.minute))\(okxMarket ? " 本地" : "") · \(selectedSession.label) · \(referenceLabel(candle))")
                     .font(.system(size: 11)).foregroundStyle(.secondary).monospacedDigit()
             }
         } else {
@@ -391,7 +392,7 @@ struct IntradayChartView: View {
     }
 
     private func detailTime(_ date: Date) -> String {
-        guard usesLocalTime else { return clockFormatter.string(from: date) }
+        guard okxMarket else { return clockFormatter.string(from: date) }
         let formatter = Self.makeClockFormatter(localTimeZone)
         formatter.dateFormat = "MM-dd HH:mm"
         return formatter.string(from: date)
@@ -412,37 +413,32 @@ struct IntradayChartView: View {
              candles: [MinuteCandle], window: ChartTimeRange?) {
             let leading: CGFloat = Instrument.isOKXSpot(symbol) ? 72 : 58
             plot = CGRect(x: leading, y: 12, width: max(1, size.width - leading - 14), height: max(1, size.height - 42))
-            var calendar = Calendar(identifier: .gregorian)
-            calendar.timeZone = Instrument.timeZone(symbol)
-            let formatter = DateFormatter()
-            formatter.locale = Locale(identifier: "en_US_POSIX")
-            formatter.calendar = calendar
-            formatter.timeZone = calendar.timeZone
-            formatter.dateFormat = "yyyy-MM-dd"
-            let date = formatter.date(from: day) ?? calendar.startOfDay(for: Date())
-            let minutes: (Int, Int)
-            switch session {
-            case .pre: minutes = (240, 570)
-            case .regular: minutes = (570, 960)
-            case .post: minutes = (960, 1200)
-            case .perpetual, .spot: minutes = (0, 1440)
-            default: minutes = (240, 1200)
-            }
-            let scheduledStart = calendar.date(bySettingHour: minutes.0 / 60, minute: minutes.0 % 60, second: 0, of: date)!
-            var rangeStart = scheduledStart
-            var rangeEnd: Date
-            if minutes.1 == 1440 {
-                rangeEnd = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: date))!
+            let range: ChartTimeRange
+            if let window {
+                range = window
             } else {
-                rangeEnd = calendar.date(bySettingHour: minutes.1 / 60, minute: minutes.1 % 60, second: 0, of: date)!
+                var calendar = Calendar(identifier: .gregorian)
+                calendar.timeZone = Instrument.timeZone(symbol)
+                let formatter = DateFormatter()
+                formatter.locale = Locale(identifier: "en_US_POSIX")
+                formatter.calendar = calendar
+                formatter.timeZone = calendar.timeZone
+                formatter.dateFormat = "yyyy-MM-dd"
+                let date = formatter.date(from: day) ?? calendar.startOfDay(for: Date())
+                let minutes: (Int, Int)
+                switch session {
+                case .pre: minutes = (240, 570)
+                case .regular: minutes = (570, 960)
+                case .post: minutes = (960, 1200)
+                default: minutes = (240, 1200)
+                }
+                let open = calendar.date(bySettingHour: minutes.0 / 60, minute: minutes.0 % 60, second: 0, of: date)!
+                let close = calendar.date(bySettingHour: minutes.1 / 60, minute: minutes.1 % 60, second: 0, of: date)!
+                range = ChartTimeRange(start: open, end: close)
             }
-            if Instrument.isOKX(symbol), let window {
-                rangeStart = window.start
-                rangeEnd = window.end
-            }
-            start = rangeStart
-            end = rangeEnd
-            let shown = candles.filter { $0.minute >= rangeStart && $0.minute < rangeEnd }
+            start = range.start
+            end = range.end
+            let shown = candles.filter { range.contains($0.minute) }
             let minimum = shown.map(\.low).min() ?? 0
             let maximum = shown.map(\.high).max() ?? 1
             let padding = max((maximum - minimum) * 0.09, max(abs(maximum) * 0.0005, 0.005))
@@ -486,13 +482,15 @@ struct IntradayChartView: View {
                              at: CGPoint(x: layout.plot.minX - 7, y: y), anchor: .trailing)
             }
         }
+        let axisClock = clockFormatter
         for (index, minutes) in tickMinutes.enumerated() {
             let fraction = minutes * 60 / layout.duration
             let date = layout.start.addingTimeInterval(layout.duration * fraction)
             let x = layout.plot.minX + CGFloat(fraction) * layout.plot.width
             let anchor: UnitPoint = index == 0 ? .leading : (index == tickMinutes.count - 1 ? .trailing : .center)
-            let label = okxMarket && showFullDay && index == tickMinutes.count - 1 && Instrument.day(symbol, at: date) != effectiveDay
-                ? "24:00" : clockFormatter.string(from: date)
+            let endpoint = index == 0 || index == tickMinutes.count - 1
+            let label = okxMarket && windowMinutes == 1440 && endpoint
+                ? detailTime(date) : axisClock.string(from: date)
             context.draw(Text(label).font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary),
                          at: CGPoint(x: x, y: layout.plot.maxY + 17), anchor: anchor)
         }
@@ -563,7 +561,7 @@ struct IntradayChartView: View {
                      with: .color(MarketTheme.accent))
         // Place the readout next to the real candle's closing-price crosshair,
         // flipping at plot edges so neither value is clipped by the popover.
-        let width: CGFloat = usesLocalTime ? 270 : okxMarket ? 226 : 178
+        let width: CGFloat = okxMarket ? 270 : 178
         let height: CGFloat = 52
         let proposedX = point.x + 12 + width <= layout.plot.maxX ? point.x + 12 : point.x - width - 12
         let proposedY = point.y - height - 12 >= layout.plot.minY ? point.y - height - 12 : point.y + 12

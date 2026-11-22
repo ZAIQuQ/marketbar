@@ -10,17 +10,18 @@ struct ChartTimeRange: Hashable {
 }
 
 /// Rolling windows use absolute minutes, including candles on earlier UTC days.
-/// A full-day plot may extend into the future; its history request never does.
+/// The last included minute is the anchor's minute; later minutes are excluded.
 enum ChartWindow {
-    static let presets = [30, 60, 120, 180, 360, 720, 0]
+    static let presets = [30, 60, 120, 180, 360, 720, 1440]
 
     static func normalized(_ minutes: Int) -> Int {
-        presets.contains(minutes) ? minutes : 120
+        // Older releases saved zero for the UTC calendar-day option.
+        if minutes == 0 { return 1440 }
+        return presets.contains(minutes) ? minutes : 120
     }
 
     static func label(_ minutes: Int) -> String {
         switch normalized(minutes) {
-        case 0: return "全天（UTC）"
         case 30: return "近 30 分钟"
         default: return "近 \(normalized(minutes) / 60) 小时"
         }
@@ -31,20 +32,7 @@ enum ChartWindow {
         guard seconds.isFinite, (946_684_800..<4_102_444_800).contains(seconds) else { return nil }
         let end = Date(timeIntervalSince1970: floor(seconds / 60) * 60 + 60)
         let window = normalized(minutes)
-        if window > 0 {
-            return ChartTimeRange(start: end.addingTimeInterval(-Double(window) * 60), end: end)
-        }
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
-        let start = calendar.startOfDay(for: anchor)
-        return calendar.date(byAdding: .day, value: 1, to: start)
-            .map { ChartTimeRange(start: start, end: $0) }
-    }
-
-    static func historyRange(minutes: Int, anchor: Date) -> ChartTimeRange? {
-        guard let plot = range(minutes: minutes, anchor: anchor) else { return nil }
-        let knownEnd = Date(timeIntervalSince1970: floor(anchor.timeIntervalSince1970 / 60) * 60 + 60)
-        return ChartTimeRange(start: plot.start, end: min(plot.end, knownEnd))
+        return ChartTimeRange(start: end.addingTimeInterval(-Double(window) * 60), end: end)
     }
 
     /// Existing local samples count as displayed data, retaining their source

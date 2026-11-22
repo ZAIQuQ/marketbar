@@ -108,9 +108,9 @@ private final class LiveDiagnostic {
         }
         if let index = CommandLine.arguments.firstIndex(of: "--history-minutes"),
            CommandLine.arguments.indices.contains(index + 1),
-           let minutes = Int(CommandLine.arguments[index + 1]), ChartWindow.presets.contains(minutes) {
-            requestedHistory = minutes
-            defaults.set(minutes, forKey: "chartWindowMinutes")
+           let minutes = Int(CommandLine.arguments[index + 1]), (minutes == 0 || ChartWindow.presets.contains(minutes)) {
+            requestedHistory = ChartWindow.normalized(minutes)
+            defaults.set(requestedHistory, forKey: "chartWindowMinutes")
         }
     }
 
